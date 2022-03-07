@@ -1,0 +1,1610 @@
+#TRUSTED ad064a3342376cd8dbd0171695d6cd2ca10bd5fca17f27c095ba58c7afa186bd0856b277ff2216398fd74640cfa78f4d657ed15abf99621307f354b53635827fa4ac6c457664a3b033da27b6c9ba94b37577138fca50b03738fb9e89f2009f57637bc9b643e2fbb3e583a82b484820dd4334d96ac0aaa8aa6653bf53ec4a834cb9c84a1d7ab330eac91db07fff6085fd672b9196194254cfc94067b43aa3a149b6e5e2e4ee7e7256f531882b621f175d04f8e18fc1ba4933c2f63d8cf37b14dfd581005c372a768982a991c4dd5fb0faa90c93dd8ca607fd75607656716d62789ae6e00cac6fd70afb0c59c2423d1eba6e6ecf7d1d8a06cfa8804cd1c26ebdf4474f6605e3312bd3129d0d1085a6b7aff82279d4bd2bbf1069c58643b525854b8c5ef4abe15abb7dc91f7efca1ba02c3a999270f3e7452b53e873f3ad6cafcffbd1937e8a8f2aae294f8614422bde1375c633d6e5975fbfee08db17f7c5b44cf8f1811a390e68c4a509244944612317296991716d9b73c6f96a107ba130865b7ecfebdaf862f77b00ea894cd7dfb9d13074d9283c22fc5451beb129b36b3eb3cf7bf94746492e1f506174c41d7845a794c1a46c2917d36d5a47811093275ec691377a3a53df63e61ae31300dcb8ddea6a371508dfd71a4c09f62b59665c947bb7f3278d1e725ac307ea5f6e03c347e36983097e992d2dcb756bb67f2d31535b6
+# -*- Fundamental -*-
+#
+# 
+#
+# This script is released under one of the Tenable Script Licenses and may not
+# be used from within scripts released under another license without the
+# authorization from Tenable Network Security, Inc.
+#
+# @NOGPL@
+#
+# rpm.inc
+# Revision: 1.125
+#
+
+include_if("patch_log.inc", 80502);
+include_if("patch_globals.inc", 80502);
+
+# Internal use globals 
+global_var __pkg_tests, __rpm_report;
+##
+# List storage of all remote packages found and checked
+##
+__pkg_tests = make_list();
+
+##
+# String containing all affected package reporting
+##
+__rpm_report = '';
+
+##
+# Array containing parsed list of rpm-list lines by packagename;
+##
+global_var __rpm_list_array = NULL;
+
+##
+# Flag for determining which vers_cmp function to use
+##
+global_var rpm_spec_vers_cmp_flag = FALSE;
+
+##
+# Regex pattern for checking for architecture patterns to remove from uname -r
+##
+global_var __arch_pat = "(\.(x86_64|i[3-6]86|s390x?|aarch64|arm(64)?|ia64))$";
+
+##
+# Changes rpm-list so that only a single copy of each package that
+# begins with "kernel-", the latest, appears in the rpm-list
+#
+# @anonparam First List of rpms, joined with newlines as in most
+#              rpm-list KB entries
+#
+# @remark Only applies to kernel packages.
+#
+# @return Revised copy of rpm-list with only the latest kernel
+#           packages
+##
+function fixup_rpm_list()
+{
+  local_var lines, line;
+  local_var ret;
+  local_var key;
+  local_var array;
+  local_var rpm;
+  local_var kernel_maj_min;
+  local_var maj_min;
+
+  kernel_maj_min = split(get_kb_item("Host/uname/major_minor"), sep:'.', keep:FALSE);
+
+  lines = split(_FCT_ANON_ARGS[0], keep:FALSE);
+  foreach line ( lines )
+  {
+    if ( line =~ "^(vz)?kernel-" )
+    {
+      rpm = parse_rpm_name(rpm:line);
+      if(!isnull(kernel_maj_min) && max_index(kernel_maj_min) > 0)
+      {
+        maj_min = split(rpm["version"], sep:'.', keep:FALSE);
+        if ( maj_min[0] != kernel_maj_min[0] || maj_min[1] != kernel_maj_min[1]) continue;
+      }
+
+      if ( isnull(array[rpm["name"]]) ) array[rpm["name"]] = line;
+      else
+      {
+        if ( rpm_cmp(rpm:line, reference:array[rpm["name"]], allowmaj:TRUE, check_epoch:TRUE) > 0 )
+        {
+          array[rpm["name"]] = line;
+        }
+      }
+    }
+    else ret += line + '\n';
+  }
+
+  foreach key ( keys(array) )
+  {
+    ret += array[key] + '\n';
+  }
+  return ret;
+}
+
+##
+# Parses rpm-list so that an array is created where the packagename
+# key points to a list of applicable rpm-list package lines
+#
+# @param rpms List of rpms, joined with newlines as in most
+#              rpm-list KB entries
+#
+# @remark Edits contents of __rpm_list_array
+#
+# @return NULL
+##
+function populate_rpm_list_array(rpms)
+{
+  local_var lines, package, my_rpm, package_name, tmp;
+  if (isnull(rpms) || !strlen(rpms)) return NULL;
+  lines = split(rpms, sep:'\n', keep:0);
+  __rpm_list_array = make_array();
+  foreach package (lines)
+  {
+    my_rpm = parse_rpm_name(rpm:package);
+    package_name = _regex_sanitize_package_name(my_rpm["name"]);
+    if (isnull(__rpm_list_array[package_name]) || (isnull(max_index(keys(__rpm_list_array[package_name])))))
+    {
+      __rpm_list_array[package_name] = [package];
+    }
+    else
+    {
+       # The following doesn't work yet. One day it might.
+       # append_element(var:__rpm_list_array[package_name], value:package);
+       # Until then, this is messy, but works and is faster than make_list()
+       tmp = __rpm_list_array[package_name];
+       append_element(var:tmp, value:package);
+       __rpm_list_array[package_name] = tmp;
+    }
+  }
+  return NULL;
+}
+
+##
+# Returns list of matching package from key in __rpm_list_array
+#
+# @param package_name package name to return matching rpm lines for
+#
+# @remark Relies on __rpm_list_array being constructed previously
+#
+# @return NULL if no package_name or no matching package names exist in __rpm_list_array or
+#         list of rpm lines associated with package_name
+##
+function fetch_rpm_lines(package_name)
+{
+  if (isnull(package_name) || !strlen(package_name)) return NULL;
+  if (isnull(__rpm_list_array) || (isnull(max_index(keys(__rpm_list_array))))) return NULL;
+  if (isnull(__rpm_list_array[package_name]) || (isnull(max_index(keys(__rpm_list_array[package_name]))))) return NULL;
+  return __rpm_list_array[package_name];
+}
+
+##
+# If string begins with "rhel#" (insensitive) change it to "el"
+#
+# @anonparam First string from part of an rpm version string
+#
+# @return anonymous parameter with "rhel" changed to "el" if it began
+#           with "rhel#"
+##
+function filter_rh_inconstency()
+{
+ local_var a;
+ a = _FCT_ANON_ARGS[0];
+ if ( tolower(a) =~ "^rhel[0-9.]+$" )
+  a = ereg_replace(pattern:"^rhel", replace:"el", string:a, icase:TRUE);
+
+ return a;
+}
+
+##
+# Add backslash escapes to characters that may interfere in regexes
+# for package names
+#
+# @remark It will not escape any character that is already escaped,
+#         and will trim down redundant escapes.
+#
+# @anonparam First Package name string from an rpm
+#
+# @return Anon param with every . and + preceded by \
+##
+function _regex_sanitize_package_name()
+{
+  local_var before, after;
+  before = _FCT_ANON_ARGS[0];
+  after = before;
+  after = ereg_replace(string:after, pattern:"\.", replace:'\\.');
+  after = ereg_replace(string:after, pattern:"\+", replace:'\\+');
+  after = ereg_replace(string:after, pattern:"\\\\+", replace:'\\');
+
+  return after;
+}
+
+##
+# Adds package to __pkg_tests list
+#
+# @anonparam First A full rpm name from target system
+##
+function pkg_tests_add()
+{
+ local_var array;
+ array = split(chomp(_FCT_ANON_ARGS[0]), sep:'|', keep:FALSE);
+  __pkg_tests = make_list(__pkg_tests, array[0]);
+}
+
+##
+# Sorts and uniques entries in __pkg_tests list, returns as string
+#
+# @return Sorted, unique list of rpms from __pkg_tests in a string
+#           separated by " / "
+##
+function pkg_tests_get()
+{
+  local_var p, s, pkg_tests_unique, pkg_tests_array, package;
+
+  if (max_index(__pkg_tests) == 0) return NULL;
+  pkg_tests_array = make_array();
+  pkg_tests_unique = make_list();
+  foreach package (__pkg_tests)
+    if (!pkg_tests_array[package]++) pkg_tests_unique = make_list(pkg_tests_unique, package);
+  pkg_tests_unique = sort(pkg_tests_unique);
+
+  s = "";
+  foreach p (pkg_tests_unique)
+    s += " / " + p;
+  return substr(s, 3);
+}
+
+##
+# Adds text to to __rpm_report string indicating an affected package
+#
+# @param package Affected package install string
+# @param reference Fixed package install string
+##
+function rpm_report_add(package, reference)
+{
+ local_var array;
+ array = split(package, sep:'|', keep:FALSE);
+ package = array[0];
+ __rpm_report += 'Remote package installed : ' + package + '\n' +
+                 'Should be                : ' + reference + '\n\n';
+}
+
+##
+# Adds text to to __rpm_report string indicating a reboot is required
+#
+# @param package Affected package install string
+# @param reference Fixed package install string
+# @param uname uname -r, the current running kernel level
+##
+function rpm_report_reboot(package, reference, uname)
+{
+  local_var array;
+  array = split(package, sep:'|', keep:FALSE);
+  package = array[0];
+  if (package == reference)
+    __rpm_report += 'Package ' + package + ' is installed.\n';
+  else
+    __rpm_report += 'Installed package ' + package + ' is greater than ' + reference + '.\n';
+  __rpm_report += 'However, according to uname -r, the current running kernel level is ' + uname + '.\n' +
+                  'This system requires a reboot to begin using the patched kernel level.\n\n';
+}
+
+##
+# Returns __rpm_report string
+#
+# @return __rpm_report prepended by a \n if __rpm_report has string
+#           length
+#         NULL otherwise
+##
+function rpm_report_get()
+{
+  if ( strlen(__rpm_report) )
+   return '\n' + __rpm_report;
+ else
+  return NULL;
+}
+
+##
+# Parses name, version, release, and other necessary flags out of rpm
+#
+# @param rpm rpm string to parse
+# @param yank optional string to remove from rpm
+#
+# @return my_rpm array containing key-values about rpm package
+##
+function parse_rpm_name(rpm, yank)
+{
+ local_var elems, num, i, name;
+ local_var my_rpm, pat, ep_str, cf_str, sat_str, scl_str;
+
+ pat = "md[kv]20[01][0-9]\.[0-9]$";
+ rpm = ereg_replace(string: rpm, pattern: pat, replace: "");
+ yank = ereg_replace(string: yank, pattern: pat, replace: "");
+
+ elems = split(rpm, sep:"|", keep:0);
+ if ( max_index(elems) > 1 )
+ {
+  my_rpm["epoch"] = elems[1];
+#  my_rpm["keyid"] = elems[2];
+  rpm = elems[0];
+ }
+ elems = split(rpm, sep:"-", keep:0);
+ num = max_index(elems);
+ name = elems[0];
+ for ( i = 1; i < num - 2 ; i ++ )
+ {
+  name += "-" + elems[i];
+ }
+
+ my_rpm["name"]     = name;
+ my_rpm["version"]  = elems[num - 2];
+ my_rpm["release"]  = elems[num - 1];
+ my_rpm["jpp_flag"] = "0";
+ my_rpm["sat_flag"] = "0";
+ my_rpm["cf_flag"]  = "0";
+ my_rpm["scl_flag"] = "0";
+
+ cf_str = pregmatch(string:my_rpm["release"], pattern:"^.*cf$");
+ if (!isnull(cf_str)) {
+   my_rpm["cf_flag"] = "1";
+ }
+
+ sat_str = pregmatch(string:my_rpm["release"], pattern:"^.*sat$");
+ if (!isnull(sat_str)) {
+   my_rpm["sat_flag"] = "1";
+ }
+
+ scl_str = pregmatch(string:my_rpm["release"], pattern:"^.*\.alt$");
+ if (!isnull(scl_str)) {
+   my_rpm["scl_flag"] = "1";
+ }
+
+ if ( "jpp" >< my_rpm["release"]) {
+   my_rpm["jpp_flag"] = "1";
+ }
+
+ my_rpm["ep_flag"] = "0";
+ if ( ".ep" >< my_rpm["release"]) {
+   ep_str = pregmatch(string:my_rpm["release"], pattern:"^.*\.ep(\d+)\..*$");
+   if (!isnull(ep_str))
+     my_rpm["ep_flag"] = ep_str[1];
+ }
+
+ if ( yank ) {
+  my_rpm["version"]  -= yank;
+        my_rpm["release"] -= yank;
+        my_rpm["epoch"] -= yank;
+ }
+
+ return my_rpm;
+}
+
+##
+# Checks first values of two version strings against each other,
+#   returns difference of major version
+#
+# @param a first version string
+# @param b second version string
+#
+# @return -2 if either octet contains non-digit and aren't equal or
+#         -1 if first octet of a < b or
+#          0 if first octet of a == b or
+#          1 if first octet of a > b
+##
+function maj_cmp(a, b)
+{
+  local_var array_a, array_b, i, max;
+  local_var e;
+
+  array_a = split(a, sep:".", keep:0);
+  array_b = split(b, sep:".", keep:0);
+  if (!(_rpm_isnum(value:array_a[0]) && _rpm_isnum(value:array_b[0])))
+  {
+    if (array_a[0] == array_b[0])
+    {
+      return 0;
+    }
+    else
+    {
+      return -2;
+    }
+  }
+  return bn_cmp(key1:bn_dec2raw(array_a[0]), key2:bn_dec2raw(array_b[0]));
+}
+
+##
+# Returns ord() value of anonymous parameter, added 255 if it's
+#   between 0 and 9, and returning 0 if it's a space
+#
+# @anonparam First a single character
+#
+# @return normalized character value
+##
+function normalize_value()
+{
+ local_var val;
+
+ val = _FCT_ANON_ARGS[0];
+
+ if ( val == ord(" ") ) return 0;
+ if ( val >= ord("0") && val <= ord("9") )
+  val += 255;
+ return val;
+}
+
+##
+#Compares strings a and b and returns based on which
+#   is greater textwise if applicable
+#
+# @param a version string piece
+# @param b version string piece
+#
+# @remark Compares normalized ord data to determine which is greater
+# @remark Fills in shorter strings with \0s
+#
+# @return -1 RPM_OLDER if normalized a < normalized b
+#          0 RPM_EQUAL if normalized a == normalized b
+#          1 RPM_NEWER if normalized a > normalized b
+##
+function generic_str_cmp(a,b)
+{
+ local_var n, i, val_a, val_b;
+ local_var retval;
+
+
+ if ( strlen(a) < strlen(b) )
+   a = a + crap(data:'\x00', length:strlen(b) - strlen(a));
+ else if ( strlen(a) > strlen(b) )
+   b = b + crap(data:'\x00', length:strlen(a) - strlen(b));
+
+ n = strlen(a);
+ retval = 0;
+ for ( i = 0 ; i < n ; i ++ )
+ {
+   val_a = normalize_value(ord(a[i]));
+   val_b = normalize_value(ord(b[i]));
+   if ( val_a > val_b )
+  return 1;
+   else if ( val_a < val_b )
+  return -1;
+ }
+
+ return 0;
+}
+
+##
+#Compares strings a and b and returns based on which
+#   has an lower numeric portion or feeds into generic_str_cmp
+#   if it's purely non-digit
+#
+# @param a version string piece
+# @param b version string piece
+#
+# @remark Calls generic_str_cmp if no digits at front/back of both
+#
+# @return -1 RPM_OLDER if a starts with a digit and b doesn't ||
+#                         a's digits in front are < b's digits
+#                           in front ||
+#                         a's digits in back are < b's digits
+#                           in back ||
+#                         a normalized < b normalized
+#          0 RPM_EQUAL if a and b's digits are equal
+#          1 RPM_NEWER if b starts with a digit and a doesn't ||
+#                         b's digits in front are < a's digits
+#                           in front ||
+#                         b's digits in back are < a's digits
+#                           in back ||
+#                         b normalized < a normalized
+##
+function nondigit_vers_cmp(a,b)
+{
+ local_var bigna, bignb;
+ local_var aa, ab;
+ local_var s;
+
+ if ( a =~ "^[0-9]" && b !~ "^[0-9]" )
+  return 1;
+ else if ( b =~ "^[0-9]" && a !~ "^[0-9]" )
+  return -1;
+
+ if ( a =~ "^[0-9]" && b =~ "^[0-9]" )
+ {
+  aa = pregmatch(string:a, pattern:"^([0-9]*)(.*)$");
+  ab = pregmatch(string:b, pattern:"^([0-9]*)(.*)$");
+  # This should never happen
+  if (isnull(aa) || isnull(ab)) return NULL;
+  bigna = bn_dec2raw(aa[1]);
+  a = aa[2];
+
+  bignb = bn_dec2raw(ab[1]);
+  b = ab[2];
+  s = 1;
+ }
+ else if (a =~ "^[^0-9]+[0-9]+$" && b =~ "^[^0-9]+[0-9]+$" )
+ {
+  aa = pregmatch(string:a, pattern:"^([^0-9]*)([0-9]*)$");
+  ab = pregmatch(string:b, pattern:"^([^0-9]*)([0-9]*)$");
+  # This should never happen
+  if (isnull(aa) || isnull(ab)) return NULL;
+  bigna = bn_dec2raw(aa[2]);
+  a = aa[1];
+
+  bignb = bn_dec2raw(ab[2]);
+  b = ab[1];
+  s = 2;
+  if ( a < b )
+  return -1;
+  else if ( a > b )
+  return 1;
+ }
+ else
+ {
+  return generic_str_cmp(a:a,b:b);
+ }
+
+ if ( strlen(aa[s]) && strlen(ab[s]) )
+ {
+   if (bn_cmp(key1:bigna, key2:bignb) != 0)
+     return bn_cmp(key1:bigna, key2:bignb);
+ }
+
+ if ( strlen(a) != 0 && strlen(b) == 0 ) return 1;
+ if ( strlen(b) != 0 && strlen(a) == 0 ) return -1;
+
+ if ( a < b )
+  return -1;
+ else if ( a > b )
+  return 1;
+ else
+  return 0;
+}
+
+##
+#Compares version strings a and b and returns based on which
+#   is lower
+#
+# @param a version string with . separator
+# @param b version string with . separator
+#
+# @remark If rpm_spec_vers_cmp_flag is enabled, this function will
+#           instead call rpm_spec_vers_cmp() with its arguments
+#
+# @remark As it goes through different octets, it throws away the
+#           largest identical parts ending in nondigits as it can
+#
+# @return -1 RPM_OLDER if an octet of a < that octet of b ||
+#                         a == b for all a octets but b has more
+#          0 RPM_EQUAL if a and b are equal
+#          1 RPM_NEWER if if an octet of b < that octet of a ||
+#                         a == b for all b octets but a has more
+##
+function vers_cmp(a, b)
+{
+ local_var array_a, array_b, i, max;
+ local_var digit_mode_a, digit_mode_b;
+ local_var elem_a, elem_b, j, la, lb, j0;
+
+ if (rpm_spec_vers_cmp_flag)
+ {
+   return rpm_spec_vers_cmp(a:a, b:b);
+ }
+
+ array_a = split(tolower(a), sep:".", keep:0);
+ array_b = split(tolower(b), sep:".", keep:0);
+
+ if ( max_index(array_b) < max_index(array_a))
+  max = max_index(array_a);
+ else
+  max = max_index(array_b);
+
+ for ( i = 0 ; i < max ; i ++ )
+ {
+  digit_mode_a = 1;
+  digit_mode_b = 1;
+  if ( max_index(array_a) <= i ) return -1;
+  if ( max_index(array_b) <= i ) return 1;
+
+  array_a[i] = filter_rh_inconstency(array_a[i]);
+  array_b[i] = filter_rh_inconstency(array_b[i]);
+
+  elem_a = array_a[i];
+  elem_b = array_b[i];
+  la = strlen(elem_a);
+  lb = strlen(elem_b);
+  j0 = -1;
+  for (j=0; j<la && j<lb; j++)
+  {
+   if (elem_a[j] != elem_b[j]) break;
+   if (elem_a[j] !~ "[0-9]") j0 = j;
+  }
+  if (j0 >= 0)
+  {
+   j0 ++;
+
+   if (j0 >= la)
+     array_a[i] = "";
+   else
+    array_a[i] = substr(elem_a, j0);
+
+   if (j0 >= lb)
+     array_b[i] = "";
+   else
+    array_b[i] = substr(elem_b, j0);
+  }
+
+  if ( array_a[i] !~ "^[0-9]+$" ) digit_mode_a = 0;
+  if ( array_b[i] !~ "^[0-9]+$" ) digit_mode_b = 0;
+
+  if ( digit_mode_a && digit_mode_b )
+      {
+       # int() casting fails miserably against numbers greater than max_int 2147483647.
+       # int of a and int of b would both be max_int. Subtraction would be similarly useless.
+       # Use the bignumber functions.
+       if ( bn_raw2dec(array_a[i]) != bn_raw2dec(array_b[i]) )
+         return bn_cmp(key1:bn_dec2raw(array_a[i]), key2:bn_dec2raw(array_b[i]));
+      }
+  else if ( array_a[i] != array_b[i] )
+     {
+        if ( nondigit_vers_cmp(a:array_a[i], b:array_b[i]) < 0 )
+    return -1;
+  else
+    return  1;
+     }
+ }
+
+ return 0;
+}
+
+##
+# Return codes for rpm_cmp and rpm_check
+##
+global_var RPM_OLDER   = -1;
+global_var RPM_EQUAL    = 0;
+global_var RPM_NEWER    = 1;
+global_var RPM_MISMATCH = 2;
+
+##
+# Return codes for _check_release_strings()
+##
+global_var RELEASE_MISMATCH = -2;
+global_var RELEASE_MISSING = -3;
+global_var RPMS_MISSING = -4;
+
+##
+# Compares the rpm and reference and returns based on which
+#   is greater if applicable
+#
+# @param rpm complete rpm string from system's rpm list
+# @param reference complete rpm string passed from plugin
+# @param yank string of data to -= remove from version string and epoch
+# @param epoch optional epoch value to compare rpm argument against
+# @param allowmaj optional flag to cause function not to return RPM_EQUAL
+#              if the major version (the 24 in 24.1.23) differs on rpm and
+#              reference
+# @param check_epoch optional flag to cause function to check epochs 
+#              instead of ignoring epoch differences in packages.
+#
+# @remark Default behavior is to return RPM_EQUAL if the major versions
+#              for rpm and reference are different, treating as entirely
+#              different packages.
+# @remark Default behavior is to ignore differences in epoch; most 
+#              advisories do not include the epoch for a fix package,
+#              even though epoch values are present.
+#
+# @return -1 RPM_OLDER if rpm and reference are for same package and
+#              rpm's epoch < epoch and check_epoch true, or
+#              rpm's version < reference version or
+#              rpm's release < reference release (if versions equal)
+#          0 RPM_EQUAL if rpm and reference package/version/release are
+#              all equal or if the major version of each is different and
+#              allowmaj is NULL or FALSE
+#          1 RPM_NEWER if rpm and reference are for same package and
+#              rpm's epoch > epoch and check_epoch true, or
+#              rpm's version > reference version or
+#              rpm's release > reference release (if versions equal)
+#          2 RPM_MISMATCH if rpm and reference are for different packages
+#              or if one or more supplied flags for each do not match
+##
+function rpm_cmp(rpm, reference, yank, epoch, allowmaj, check_epoch)
+{
+ local_var my_rpm, my_reference, eq, ep;
+
+ my_rpm = parse_rpm_name(rpm:rpm, yank:yank);
+ my_reference = parse_rpm_name(rpm:reference, yank:yank);
+
+ if (my_rpm["name"] != my_reference["name"])
+ {
+   return RPM_MISMATCH;
+ }
+
+ if (my_rpm["ep_flag"] != my_reference["ep_flag"])
+ {
+   return RPM_MISMATCH;
+ }
+
+ if (my_rpm["jpp_flag"] != my_reference["jpp_flag"])
+ {
+   return RPM_MISMATCH;
+ }
+
+ if (my_rpm["sat_flag"] != my_reference["sat_flag"])
+ {
+   return RPM_MISMATCH;
+ }
+
+ if (my_rpm["cf_flag"] != my_reference["cf_flag"])
+ {
+   return RPM_MISMATCH;
+ }
+
+ if (my_rpm["scl_flag"] != my_reference["scl_flag"])
+ {
+   return RPM_MISMATCH;
+ }
+
+ if (check_epoch)
+ {
+   eq = int(my_rpm["epoch"]) - int(epoch);
+   if (eq < 0) return RPM_OLDER;
+   if (eq > 0) return RPM_NEWER;
+ }
+
+ # for the redhat release package, only compare like versions
+ # e.g. compare redhat-release-3ES-a.b.c and redhat-release-3ES-x.y.z,
+ #      but not redhat-release-3ES-a.b.c and redhat-release-3WS-x.y.z
+ if (
+   my_reference["name"] == "redhat-release" &&
+   my_rpm["version"] != my_reference["version"]
+ )
+ {
+   return RPM_MISMATCH;
+ }
+ else
+ {
+   # nb: versioning for the perl-Module-Build package is not ordered
+   # numerically (eg, 0.40 > 0.3500)
+   if (my_reference["name"] == "perl-Module-Build")
+   {
+     if (my_rpm["version"] =~ "^0\.[0-9]{4}($|[^0-9])" || my_reference["version"] =~ "^0\.[0-9]{4}($|[^0-9])")
+     {
+       my_rpm["version"] = ereg_replace(pattern:"^(0\.[0-9][0-9])\.", replace:"\1"+"00.", string:my_rpm["version"]);
+       my_reference["version"] = ereg_replace(pattern:"^(0\.[0-9][0-9])\.", replace:"\1"+"00.", string:my_reference["version"]);
+     }
+     else if (my_rpm["version"] =~ "^0\.[0-9]{5}($|[^0-9])" || my_reference["version"] =~ "^0\.[0-9]{5}($|[^0-9])")
+     {
+       my_rpm["version"] = ereg_replace(pattern:"^(0\.[0-9][0-9])\.", replace:"\1"+"00.", string:my_rpm["version"]);
+       my_reference["version"] = ereg_replace(pattern:"^(0\.[0-9][0-9])\.", replace:"\1"+"00.", string:my_reference["version"]);
+     }
+   }
+
+   eq = maj_cmp(a:my_rpm["version"], b:my_reference["version"]);
+   if ( eq != 0 && (isnull(allowmaj) || allowmaj == FALSE )) return RPM_EQUAL;
+
+   eq = vers_cmp(a:my_rpm["version"], b:my_reference["version"]);
+   if (eq > 0) return RPM_NEWER;
+   if (eq < 0) return RPM_OLDER;
+ }
+
+ eq = vers_cmp(a:my_rpm["release"], b:my_reference["release"]);
+ if (eq > 0) return RPM_NEWER;
+ if (eq < 0) return RPM_OLDER;
+ return RPM_EQUAL;
+}
+
+##
+# Combs through the potential release strings and rpm_lists to identify
+#              the release and rpm-list on system, if applicable
+#
+# @param release optional argument to compare release string on system
+#              against
+#
+# @remark Default behavior is to return an array containing keys for
+#              "parsed_release" and "rpm-list". In the case of errors
+#              (which will cause the calling functions to return 0)
+#              we return an integer less than 0. 
+#
+# @return array with keys "parsed_release" and "rpm-list" if a valid
+#              release and rpm-list were found
+#         -2 RELEASE_MISMATCH if release argument and parsed_release
+#              don't match
+#         -3 RELEASE_MISING if unable to parse release
+#         -4 RPMS_MISSING if the "rpm-list" for a "parsed_release" is
+#              null or empty
+##
+function _check_release_strings(release)
+{
+  local_var rh_release, ala_release, suse_release, mdk_release, mlos_release;
+  local_var xenserver_release, ovs_release, centos_release, ol_num, sl_num, parsed_release;
+  local_var rhel_num, fc_num, centos_num, rpms, results, regex_results;
+  local_var rhel_pattern, fedora_pattern, fedora_core_pattern;
+  local_var ol_pattern, sl_pattern, centos_pattern, centos_old_pattern;
+  local_var euler_pattern, euler_release, euler_num;
+  local_var virtuozzo_pattern, virtuozzo_release, virtuozzo_num;
+  local_var photon_pattern, photon_release, photon_num;
+  local_var zte_cgsl_pattern, zte_cgsl_release;
+
+
+  rh_release = get_kb_item("Host/RedHat/release");
+  ala_release = get_kb_item("Host/AmazonLinux/release");
+  suse_release = get_kb_item("Host/SuSE/release");
+  mdk_release = get_kb_item("Host/Mandrake/release");
+  ovs_release = get_kb_item("Host/OracleVM/release");
+  centos_release = get_kb_item("Host/CentOS/release");
+  mlos_release = get_kb_item("Host/McAfeeLinux/release");
+  xenserver_release = get_kb_item("Host/XenServer/release");
+  euler_release = get_kb_item("Host/EulerOS/release");
+  virtuozzo_release = get_kb_item("Host/Virtuozzo/release");
+  photon_release = get_kb_item("Host/PhotonOS/release");
+  zte_cgsl_release = get_kb_item("Host/ZTE-CGSL/release");
+
+  rhel_pattern = "Red Hat Enterprise Linux.*release ([3-8])(\D|$)";
+  fedora_pattern = "Fedora release ([7-9]|[1-2][0-9]|3[0-4])(\D|$)";
+  fedora_core_pattern = "Fedora Core release ([1-6])(\D|$)";
+  ol_pattern = "Oracle .*Linux .*release ([3-8])(\D|$)";
+  sl_pattern = "Scientific Linux release ([3-8])(\D|$)";
+  centos_pattern = "CentOS(?: Stream)?(?: Linux)? release ([6-8])(\D|$)";
+  centos_old_pattern = "CentOS release ([3-5])(\D|$)";
+  euler_pattern = "EulerOS release ([1-2]\.[0-9])(\D|$)";
+  virtuozzo_pattern = "Virtuozzo Linux release ([6-8])\.[0-9](\D|$)";
+  photon_pattern = "VMware Photon (?:Linux|OS) ([1-4]\.[0-9])(\D|$)";
+  zte_cgsl_pattern = "^CGSL (MAIN|CORE) ([3-6])\.[0-9]+$";
+
+  if ( !isnull(ala_release) && strlen(ala_release) > 0 && ( stridx(ala_release, "ALA") == 0 || stridx(ala_release, "AL2-") == 0 ) )
+    parsed_release = ala_release;
+  else if ( "MDK" >< mdk_release )
+    parsed_release = mdk_release;
+  else if ( !isnull(ovs_release) && strlen(ovs_release) > 0 && stridx(ovs_release, "OVS") == 0 && preg(pattern:"^(OVS\d+\.\d+)\.", string:ovs_release) )
+  {
+    regex_results = pregmatch(pattern:"^(OVS\d+\.\d+)\.", string:ovs_release);
+    if (!isnull(regex_results)) parsed_release = regex_results[1];
+  }
+  else if ( "SLED" >< suse_release || "SLES" >< suse_release || "SUSE" >< suse_release )
+    parsed_release = suse_release;
+  else if ( "MLOS" >< mlos_release )
+    parsed_release = mlos_release;
+  else if ( "XS" >< xenserver_release )
+    parsed_release = xenserver_release;
+  else if ( egrep(pattern:rhel_pattern, string:rh_release) )
+  {
+    regex_results = pregmatch(pattern:rhel_pattern, string:rh_release);
+    if (!isnull(regex_results))
+    {
+      rhel_num =  regex_results[1];
+      parsed_release = "RHEL" + rhel_num;
+    }
+  }
+  else if ( egrep(pattern:"Red Hat.*(Enterprise|Advanced).*release 2\.1", string:rh_release) )
+    parsed_release = "RHEL2.1";
+  else if ( egrep(pattern:fedora_pattern, string:rh_release) )
+  {
+    regex_results = pregmatch(pattern:fedora_pattern, string:rh_release);
+    if (!isnull(regex_results))
+    {
+      fc_num =  regex_results[1];
+      parsed_release = "FC" + fc_num;
+    }
+  }
+  else if ( egrep(pattern:fedora_core_pattern, string:rh_release) )
+  {
+    regex_results = pregmatch(pattern:fedora_core_pattern, string:rh_release);
+    if (!isnull(regex_results))
+    {
+      fc_num =  regex_results[1];
+      parsed_release = "FC" + fc_num;
+    }
+  }
+  else if ( egrep(pattern:ol_pattern, string:rh_release) )
+  {
+    regex_results = pregmatch(pattern:ol_pattern, string:rh_release);
+    if (!isnull(regex_results))
+    {
+      ol_num =  regex_results[1];
+      parsed_release = "EL" + ol_num;
+    }
+  }
+  else if ( egrep(pattern:sl_pattern, string:rh_release) )
+  {
+    regex_results = pregmatch(pattern:sl_pattern, string:rh_release);
+    if (!isnull(regex_results))
+    {
+      sl_num =  regex_results[1];
+      parsed_release = "SL" + sl_num;
+    }
+  }
+  else if ( egrep(pattern:centos_pattern, string:centos_release) )
+  {
+    regex_results = pregmatch(pattern:centos_pattern, string:centos_release);
+    if (!isnull(regex_results))
+    {
+      centos_num =  regex_results[1];
+      parsed_release = "CentOS-" + centos_num;
+    }
+  }
+  else if ( egrep(pattern:centos_old_pattern, string:centos_release) )
+  {
+    regex_results = pregmatch(pattern:centos_old_pattern, string:centos_release);
+    if (!isnull(regex_results))
+    {
+      centos_num =  regex_results[1];
+      parsed_release = "CentOS-" + centos_num;
+    }
+  }
+  else if ( egrep(pattern:euler_pattern, string:euler_release) )
+  {
+    regex_results = pregmatch(pattern:euler_pattern, string:euler_release);
+    if (!isnull(regex_results))
+    {
+      euler_num =  regex_results[1];
+      parsed_release = "EulerOS-" + euler_num;
+    }
+  }
+  else if ( egrep(pattern:virtuozzo_pattern, string:virtuozzo_release) )
+  {
+    regex_results = pregmatch(pattern:virtuozzo_pattern, string:virtuozzo_release);
+    if (!isnull(regex_results))
+    {
+      virtuozzo_num =  regex_results[1];
+      parsed_release = "Virtuozzo-" + virtuozzo_num;
+    }
+  }
+  else if ( egrep(pattern:photon_pattern, string:photon_release) )
+  {
+    regex_results = pregmatch(pattern:photon_pattern, string:photon_release);
+    if (!isnull(regex_results))
+    {
+      photon_num =  regex_results[1];
+      parsed_release = "PhotonOS-" + photon_num;
+    }
+  }
+  else if ( egrep(pattern:zte_cgsl_pattern, string:zte_cgsl_release) )
+  {
+    parsed_release = "ZTE " + zte_cgsl_release;
+  }
+
+  if (isnull(parsed_release) || strlen(parsed_release) < 1) return RELEASE_MISSING;
+  if (!isnull(release) && strlen(release) > 0)
+  { 
+    if (release == "ALA") {
+      if (stridx(parsed_release, "ALA") != 0) return RELEASE_MISMATCH;
+    } else if (release == "AL2") {
+      if (stridx(parsed_release, "AL2-") != 0) return RELEASE_MISMATCH;
+    } else {
+      if (release != parsed_release) return RELEASE_MISMATCH;
+    }
+  }
+  if (stridx(parsed_release, "ALA") == 0 || stridx(parsed_release, "AL2-") == 0 )
+    rpms = get_kb_item("Host/AmazonLinux/rpm-list");
+  else if ("MLOS" >< parsed_release)
+    rpms = get_kb_item("Host/McAfeeLinux/rpm-list");
+  else if ("XS" >< parsed_release)
+    rpms = get_kb_item("Host/XenServer/rpm-list");
+  else if ( "SUSE" >< parsed_release || "SLED" >< parsed_release || "SLES" >< parsed_release )
+    rpms = get_kb_item("Host/SuSE/rpm-list");
+  else if ("MDK" >< parsed_release)
+    rpms = get_kb_item("Host/Mandrake/rpm-list");
+  else if ("OVS" >< parsed_release )
+    rpms = get_kb_item("Host/OracleVM/rpm-list");
+  else if ("CentOS" >< parsed_release )
+    rpms = get_kb_item("Host/CentOS/rpm-list");
+  else if ("EulerOS" >< parsed_release )
+    rpms = get_kb_item("Host/EulerOS/rpm-list");
+  else if ("Virtuozzo" >< parsed_release )
+    rpms = get_kb_item("Host/Virtuozzo/rpm-list");
+  else if ("PhotonOS" >< parsed_release )
+    rpms = get_kb_item("Host/PhotonOS/rpm-list");
+  else if ("ZTE CGSL" >< parsed_release )
+    rpms = get_kb_item("Host/ZTE-CGSL/rpm-list");
+  else
+    rpms = get_kb_item("Host/RedHat/rpm-list");
+  if (isnull(rpms) || strlen(rpms) < 1) return RPMS_MISSING;
+  results["rpm-list"] = rpms;
+  results["parsed_release"] = parsed_release;
+  return results;
+}
+
+##
+# Combs through the rpm list for the appropriate package from the
+#              reference arguments, and compares the results,
+#              adding them to the report and test values if appropriate.
+#
+# @param reference complete rpm string passed from plugin
+# @param yank string of data to -= remove from version string and epoch
+# @param release OS level identifier to check against before checking package
+# @param epoch optional epoch time to compare rpms against
+# @param cpu optional argument to specify that the target machine should
+#              be a specific architecture and which that is.
+# @param sp optional SuSE or RedHat service spack to specify the target
+#              machine should be.
+# @param allowmaj optional flag to cause rpm_cmp not to return RPM_EQUAL
+#              if the major version (the 24 in 24.1.23) differs on rpm and
+#              reference
+# @param rpm_list optional copy of rpm-list to use instead of the one on
+#              the remote system
+# @param rpm_spec_vers_cmp optional flag to force rpm_spec_vers_cmp to be
+#              run instead of standard/legacy vers_cmp if it resolves as truthy
+# @param el_string optional flag to perform an additional check for a
+#              specific string within the release string portion of the
+#              reference packagename
+#
+# @remark Default behavior is to return RPM_EQUAL if the major versions
+#              for rpm and reference are different, treating as entirely
+#              different packages.
+#              __pkg_tests and __rpm_report will be modified if a reference
+#              is found and lesser version on machine, respectively.
+#
+# @return 1 if reference package found on machine of lesser version
+#         0 if reference is for certain kernel files in some situations
+#              or service pack mismatch or cpu mismatch
+#              or unknown/inapplicable release
+#              or missing rpm list
+#              or package not found on target machine
+#              or package found doesn't have supplied el_string
+#              or package found on target machine of >= versions than
+#              reference
+#              or package found on target machine of different major version
+#              with allowmaj NULL or FALSE
+##
+function rpm_check(reference, yank, release, epoch, cpu, sp, allowmaj, rpm_list, rpm_spec_vers_cmp, el_string)
+{
+  local_var rh_sp, suse_sp, euler_sp, virtuozzo_sp, zte_cgsl_sp;
+  local_var rpms, package, lines, e, my_rpm, my_cpu, my_reference, rpm_results, check_epoch;
+  local_var kernel_package_ok_flag, non_kernel_package_report_flag, is_kernel_package;
+  local_var kernel_package_reboot_flag, uname_r, uname_package, ksplice_used, vuln_kernel_packages;
+  local_var matching_kernel_packages_count;
+
+  if ( "kernel-doc" >< reference ) return 0;
+
+  if (get_kb_item("Host/uptrack-uname-r") && match(pattern:"kernel*", string:reference)) return 0;
+
+  rh_sp = get_kb_item("Host/RedHat/minor_release");
+  suse_sp = get_kb_item("Host/SuSE/patchlevel");
+  euler_sp = get_kb_item("Host/EulerOS/sp");
+  virtuozzo_sp = get_kb_item("Host/Virtuozzo/minor_release");
+  zte_cgsl_sp = get_kb_item("Host/ZTE-CGSL/minor_release");
+
+  uname_r = get_kb_item("Host/uname-r");
+  if (!isnull(uname_r) && strlen(uname_r))
+  {
+    # Different OSes require different modifications.
+    if (preg(pattern:"^(PhotonOS-|SUSE|SLES|SLED)", string:release))
+    {
+      # PhotonOS/SUSE/openSUSE require the final - section of uname_r removed.
+      uname_r = ereg_replace(string:uname_r, pattern:"\-[a-zA-Z0-9_]+$", replace:'');
+    }
+    else if (preg(pattern:"^Virtuozzo-", string:release))
+    {
+      # Virtuozzo requires No Change to occur to uname_r
+    }
+    else
+    {
+      # All others need the final . section of uname_r removed, if it matches an architecture pattern.
+      if (preg(pattern:__arch_pat, string:uname_r))
+      {
+        uname_r = ereg_replace(string:uname_r, pattern:__arch_pat, replace:'');
+      }
+    }
+  }
+
+  if (preg(pattern:"^(SUSE|SLES|SLED|ZTE CGSL)", string:release))
+  {
+    # At this time SUSE/openSUSE/ZTE NewStart CGSL do not contain levels of detail in uname -r sufficient to perform uname checks accurately.
+    uname_r = NULL;
+  }
+
+  if (get_kb_item("Host/ksplice/kernel-cves"))
+    ksplice_used = TRUE;
+
+  # Change this when other distros use SP too
+  if ( !isnull(sp) && (
+       ( !isnull(euler_sp) && sp != int(euler_sp) ) ||
+       ( !isnull(suse_sp) && sp != int(suse_sp) ) ||
+       ( !isnull(rh_sp) && sp != int(rh_sp) ) ||
+       ( !isnull(virtuozzo_sp) && sp != int(virtuozzo_sp) ) || 
+       ( !isnull(zte_cgsl_sp) && sp != int(zte_cgsl_sp) )
+  ) )
+    return 0;
+
+  if ( ! isnull(cpu) )
+  {
+    my_cpu = get_kb_item("Host/cpu");
+    # my_cpu returns a newline
+    # 1270164212 1 Host/cpu=x86_64\n
+    my_cpu = chomp(my_cpu);
+
+    if ( my_cpu != cpu )
+    {
+      if (my_cpu =~ "i[3-6]86" && cpu =~ "i[3-6]86")
+      {
+        if (int(substr(my_cpu, 1)) < int(substr(cpu, 1))) return 0;
+      }
+      else return 0;
+    }
+  }
+
+  rpm_results = _check_release_strings(release:release);
+
+  if ( typeof(rpm_results) == "int" || isnull(rpm_results) ) return 0;
+  if (isnull(rpm_results["rpm-list"]))
+    return 0;
+  else
+    rpms = rpm_results["rpm-list"];
+
+  if (rpm_list && strlen(rpm_list) > 0)
+    rpms = rpm_list;
+
+  # Currently, only run epoch checks on Fedora Core machines
+  # or when epoch is manually supplied.
+  # Modify this when plugins and OSes both support epoch values.
+  if (stridx(rpm_results["parsed_release"], "FC") == 0 ||
+      !isnull(epoch))
+    check_epoch = TRUE;
+  else
+    check_epoch = FALSE;
+
+  # Currently, only run the new rpm-spec version compare function
+  # on ZTE CGSL, or when that flag is is manually supplied.
+  # Modify this when changing more OSes to run the new function.
+  if (stridx(rpm_results["parsed_release"], "ZTE CGSL") == 0 || rpm_spec_vers_cmp)
+    rpm_spec_vers_cmp_flag = TRUE;
+  else
+    rpm_spec_vers_cmp_flag = FALSE;
+
+  if (preg(pattern:"^(vz)?kernel-", string:reference))
+  {
+    is_kernel_package = TRUE;
+  }
+  else
+  {
+    is_kernel_package = FALSE;
+  }
+
+  # Assemble a proper list of rpms by matching package name, unless 
+  if (isnull(__rpm_list_array))
+  {
+    # In case multiple packages including kernel are used, apply fixup logic always.
+    rpms = fixup_rpm_list(rpms);
+    populate_rpm_list_array(rpms:rpms);
+  }
+
+  my_reference = parse_rpm_name(rpm:reference, yank:yank);
+  lines = fetch_rpm_lines(package_name:_regex_sanitize_package_name(my_reference["name"]));
+  if (!lines) return 0;
+
+  #lines = split(package, sep:'\n', keep:0);
+  vuln_kernel_packages = {};
+  matching_kernel_packages_count = 0;
+  foreach package (lines)
+  {
+    e =  rpm_cmp(rpm:package, reference:reference, yank:yank, epoch:epoch, allowmaj:allowmaj, check_epoch:check_epoch);
+    my_rpm = parse_rpm_name(rpm:package, yank:yank);
+    # Check the two cases for if the package name matches the reference
+    if (e != RPM_MISMATCH)
+    {
+      pkg_tests_add(package);
+    }
+    else
+    {
+      my_reference = parse_rpm_name(rpm:reference, yank:yank);
+      if (my_rpm["name"] == my_reference["name"])
+      {
+        pkg_tests_add(package);
+      }
+    }
+    # If we have an el_string, check to ensure it's within the release string.
+    if (!isnull(el_string) && strlen(el_string))
+    {
+      if (!preg(pattern:el_string, string:my_rpm["release"]))
+      {
+        continue;
+      }
+    }
+    # Keep count of kernel packages that got past the el_string check for later.
+    if ( is_kernel_package ) matching_kernel_packages_count++;
+    # Add to the report if it's older
+    if ( e == RPM_OLDER)
+    {
+      rpm_report_add(package:package, reference:reference);
+      if ( !is_kernel_package )
+      {
+        non_kernel_package_report_flag = TRUE;
+        if (nasl_level() >= 80502)
+        {
+          patch::log_finding(
+            prod_name      : my_rpm["name"] + "-" + my_rpm["version"],
+            prod_family_id : patch::FAM_RPM,
+            location       : "rpm",
+            version        : package,
+            missing        : reference
+          );
+        }
+      }
+      else
+      {
+        vuln_kernel_packages[package] = my_rpm;
+      }
+    }
+    else if ((e == RPM_NEWER || e == RPM_EQUAL) && is_kernel_package && !ksplice_used)
+    {
+      # If the uname -r is lower than the version-revision in package,
+      # we need to flag the user for needing a reboot.
+      # Skip this if ksplice is being used.
+      if (!isnull(uname_r) && strlen(uname_r))
+      {
+        my_rpm = parse_rpm_name(rpm:reference, yank:yank);
+        uname_package = my_rpm["name"] + "-" + uname_r;
+        e =  rpm_cmp(rpm:uname_package, reference:reference, yank:yank, epoch:epoch, allowmaj:allowmaj, check_epoch:check_epoch);
+        if (e == RPM_OLDER)
+        {
+          rpm_report_reboot(package:package, reference:reference, uname:uname_r);
+          kernel_package_reboot_flag = 1;
+        }
+        else
+        {
+          kernel_package_ok_flag = 1;
+        }
+      }
+      else
+      {
+        kernel_package_ok_flag = 1;
+      }
+    }
+    else if (e != RPM_MISMATCH)
+      # If it's not older and not a mismatch, note that at least one package was okay.
+      # This will prevent reporting, but only for kernel- packages.
+      kernel_package_ok_flag = 1;
+  }
+
+  if ( !is_kernel_package )
+  {
+    # If any single non-kernel package was RPM_OLDER, return 1 so we can report.
+    if ( non_kernel_package_report_flag ) return 1;
+    return 0;
+  }
+  else
+  {
+    # If any single kernel package was neither RPM_OLDER or RPM_MISMATCH, return 0 so we don't report.
+    # However, if the current running kernel is lower version than the highest kernel package level,
+    # the scanned system is vulnerable and requires a reboot.
+    if ( kernel_package_reboot_flag ) return 1;
+    if ( kernel_package_ok_flag ) return 0;
+    # We need a defeat now that kernel packages can mismatch due to el_string.
+    if ( matching_kernel_packages_count < 1 ) return 0;
+
+    if (nasl_level() >= 80502)
+    {
+      foreach package (keys(vuln_kernel_packages))
+      {
+        my_rpm = vuln_kernel_packages[package];
+        patch::log_finding(
+          prod_name      : my_rpm["name"] + "-" + my_rpm["version"],
+          prod_family_id : patch::FAM_RPM,
+          location       : "rpm",
+          version        : package,
+          missing        : reference
+        );
+      }
+    }
+    # This guilty-until-proven-innocent design should never be used again.
+    return 1;
+  }
+}
+
+##
+# Checks if a specific rpm string exists within a system's rpm list
+#
+# @param rpm rpm name (ie: python-devel-), anchored to left
+# @param release OS release release number (ie: RHEL6)
+# @param rpm_list optional copy of rpm-list to use instead of the one on
+#              the remote system
+#
+# @remark A complete rpm is not required, it is fed into a
+#              start anchored regex, partial packages allowed
+#
+# @return 1 if rpm installed and Host OS release == release
+#         0 otherwise
+##
+function rpm_exists(rpm, release, rpm_list)
+{
+  local_var rpms, rpm_results;
+
+  if (get_kb_item("Host/uptrack-uname-r") && match(pattern:"kernel*", string:rpm)) return 0;
+
+  rpm_results = _check_release_strings(release:release);
+  if ( typeof(rpm_results) == "int" || isnull(rpm_results) ) return 0;
+
+  if (isnull(rpm_results["rpm-list"]))
+    return 0;
+  else
+    rpms = rpm_results["rpm-list"];
+
+  if (rpm_list && strlen(rpm_list) > 0)
+    rpms = rpm_list;
+
+  if ( egrep(pattern:"^" + _regex_sanitize_package_name(rpm), string:rpms) )
+    return 1;
+  else
+    return 0;
+}
+
+##
+# Determines if string consists of only (and at least one) digits
+#
+# @param value string to check
+#
+# @return TRUE if value is only digits [0-9]
+#         FALSE otherwise
+##
+function _rpm_isnum(value)
+{
+  if (preg(pattern:"^[0-9]+$", string:value))
+    return TRUE;
+  return FALSE;
+}
+
+##
+# Determines if string consists of only (and at least one) uppercase and lowercase letters
+#
+# @param value string to check
+#
+# @return TRUE if value is only upper or lowercase letters
+#         FALSE otherwise
+##
+
+function _rpm_isalpha(value)
+{
+  if (preg(pattern:"^[a-zA-Z]+$", string:value))
+    return TRUE;
+  return FALSE;
+}
+
+##
+# Breaks rpm version strings into an ordered list of number and alpha sections
+#
+# @param version rpm version string
+#
+# @remark All non-numbers-or-alphas are ignored
+#
+# @return NULL if version is empty or NULL, or an integer section of a < that integer
+#         list of rpm-significant number/alpha strings, in the order originally seen
+##
+function _rpm_spec_parse(version)
+{
+  local_var i, version_len, mode, previous_mode, value, previous_values, return_list;
+  if (isnull(version))
+    return NULL;
+  version_len = strlen(version);
+  if (!version_len)
+    return NULL;
+  previous_mode = "none";
+  previous_values = "";
+  return_list = [];
+  for ( i = 0 ; i < version_len ; i ++ )
+  {
+    value = version[i];
+    if (_rpm_isalpha(value:value)) mode = "alpha";
+    else if (_rpm_isnum(value:value)) mode = "num";
+    else mode = "ignore";
+    
+    if (previous_mode == "none") previous_mode = mode;
+    if (mode != previous_mode)
+    {
+      if (previous_mode != "ignore")
+      {
+        append_element(var:return_list, value:previous_values);
+      } 
+      previous_values = "";
+    }
+    previous_mode = mode;
+    if (mode != "ignore")
+      previous_values += value;
+  }
+  # Append the final previous_values at end of string.
+  if (strlen(previous_values))
+    append_element(var:return_list, value:previous_values);
+  return return_list;
+}
+
+##
+# Compares version strings a and b and returns based on which
+#    is lower according to the rpm specifications
+#
+# @param a rpm version string
+# @param b rpm version string
+#
+# @remark All non-numbers-or-alphas are ignored as separators
+# @remark Number sections are newer than alpha sections
+# @remark Lowercase letters are newer than uppercase letters
+#
+# @return Negative number below -1 if an integer section of a < that integer
+#                                     section of b by two or more
+#                     -1 RPM_OLDER if a section of a < that section of b ||
+#                                     a == b for all a sections but b has more sections
+#                      0 RPM_EQUAL if a and b are functionally equal according to rpm
+#                      1 RPM_NEWER if a section of b < that section of a ||
+#                                     a == b for all b sections but a has more sections
+#         Positive number above 1 if an integer section of a < that integer
+#                                     section of b by two or more
+##
+function rpm_spec_vers_cmp(a, b)
+{
+  local_var array_a, array_b, i, max;
+  local_var elem_a, elem_b;
+
+  if (a == b) return 0;
+
+  array_a = _rpm_spec_parse(version:a);
+  array_b = _rpm_spec_parse(version:b);
+  
+  if ( max_index(array_b) < max_index(array_a))
+    max = max_index(array_a);
+  else
+    max = max_index(array_b);
+
+  for ( i = 0 ; i < max ; i ++ )
+  {
+    if ( max_index(array_a) <= i ) return -1;
+    if ( max_index(array_b) <= i ) return 1;
+
+    elem_a = array_a[i];
+    elem_b = array_b[i];
+    
+    # filter_rh_inconstency equivalent
+    if ( tolower(elem_a) == "rhel" ) elem_a = "el";
+    if ( tolower(elem_b) == "rhel" ) elem_b = "el";
+
+    if (elem_a == elem_b) continue;
+    if (_rpm_isalpha(value:elem_a) && _rpm_isnum(value:elem_b)) return -1;
+    if (_rpm_isnum(value:elem_a) && _rpm_isalpha(value:elem_b)) return 1;
+    if (_rpm_isnum(value:elem_a) && _rpm_isnum(value:elem_b))
+    {
+       if ( bn_raw2dec(elem_a) == bn_raw2dec(elem_b) ) continue;
+       return bn_cmp(key1:bn_dec2raw(elem_a), key2:bn_dec2raw(elem_b));
+    }
+    # Both alpha
+    if (elem_a < elem_b) return -1;
+    if (elem_a > elem_b) return 1;  
+  }
+  return 0;
+}
+
+# RedHat-specific functions section
+
+##
+# Returns text explaining the package method of detection, issues
+# behind it, and how to properly set up 'yum updateinfo list security
+# updates'.
+#
+# @return caveat block
+##
+function redhat_report_package_caveat()
+{
+  local_var caveat;
+  caveat =
+"NOTE: The vulnerability information above was derived by checking the
+package versions of the affected packages from this advisory. This
+scan is unable to rely on Red Hat's own security checks, which
+consider channels and products in their vulnerability determinations.";
+  return caveat;
+}
+
+##
+# Returns text explaining the yum-updateinfo method of detection,
+# and which RHSA to apply to resolve the issue.
+#
+# @return caveat block
+##
+function redhat_report_yum_caveat(rhsa)
+{
+  local_var caveat;
+  if (isnull(rhsa)) rhsa = 'the necessary updates';
+  caveat =
+"NOTE: The vulnerability information above was derived from the use of
+the 'yum updateinfo list security updates' command to determine which
+Red Hat security advisories apply to this system. Apply
+" + rhsa + " to resolve this vulnerability.
+";
+
+  return caveat;
+}
+
+##
+# Returns text explaining the repository method of detection, issues
+# behind it, and lets the user know they should scan with an account
+# that has the required permissions to read this file.
+#
+# @return caveat block
+##
+function redhat_report_repo_caveat()
+{
+  local_var caveat;
+  caveat =
+"NOTE: The vulnerability information above was derived by checking the
+package versions of the affected packages from this advisory. This
+scan would normally rely on checking for the presence of specific
+installed Red Hat repositories, but either no repositories were found
+in the repository list, the file was empty or missing, or the scan
+account lacked permissions to access it. Please ensure that the
+repository file is populated and the scanning account has
+permissions to examine the /etc/yum.repos.d/redhat.repo file.";
+  return caveat;
+}
+
+##
+# Returns text explaining the repository method of detection, issues
+# behind it, and lets the user know they should scan with an account
+# that has the required permissions to read this file.
+#
+# @return caveat block
+##
+function centos_report_repo_caveat()
+{
+  local_var caveat;
+  caveat =
+"NOTE: The vulnerability information above was derived by checking the
+package versions of the affected packages from this advisory. This
+scan would normally rely on checking for the presence of specific
+installed and enabled CentOS repositories, but either no repositories
+were found in the repository directory, the repository files were empty
+or missing, or the scan account lacked permissions to access them.
+Please ensure that the repository files are populated and the scanning
+account has permissions to examine the files in /etc/yum.repos.d/.";
+  return caveat;
+}
+
+##
+# Checks which packages in yum-updateinfo relate to the RHSA,
+# determines which fix packages are associated with that RHSA,
+# determines which installed packages are associate with those fix
+# packages, and compiles the data together to be returned as a string.
+#
+# @param rhsa string to determine what RHSA the vulnerability applies
+#
+# @return NULL if yum_updateinfo isn't present or
+#                 rhsa is NULL or empty or
+#                 rhsa is not present in yum_updateinfo or
+#                 rpm-list is not present
+#         string containing package reports plus descriptive caveat
+#                otherwise
+#
+##
+
+function redhat_generate_yum_updateinfo_report(rhsa)
+{
+  local_var yum_updateinfo, rhsa_pattern, rhsa_lines, rhsa_line;
+  local_var fix_packages, fix_to_installed_array;
+  local_var rpms, fixup_flag, fixed_rpm, package_name, fixed_parsed;
+  local_var rpm_list_matches, rpm_list_lines, rpm_line, rpm_line_parsed;
+  local_var installed_rpm, rpm_report, fixed_rpm_trimmed;
+  fix_to_installed_array = make_array();
+  yum_updateinfo = get_kb_item("Host/RedHat/yum-updateinfo");
+  rpms = get_kb_item("Host/RedHat/rpm-list");
+  if (isnull(rhsa) || strlen(rhsa) < 1) return NULL;
+  if (isnull(yum_updateinfo) || strlen(yum_updateinfo) < 1) return NULL;
+  if (isnull(rpms) || strlen(rpms) < 1) return NULL;
+  if (rhsa >!< yum_updateinfo) return NULL;
+  rhsa_pattern = "^" + rhsa + "\s+[a-zA-Z]+/Sec\.\s+(.*)$";
+  rhsa_lines = egrep(pattern:rhsa_pattern, string:yum_updateinfo, icase:TRUE);
+  rhsa_lines = split(rhsa_lines, sep:'\n', keep:0);
+  foreach rhsa_line (rhsa_lines) {
+    fixed_rpm = pregmatch(pattern:rhsa_pattern, string:rhsa_line, icase:TRUE);
+    if (!isnull(fixed_rpm)) {
+      fixed_rpm = fixed_rpm[1];
+
+      # These yum-updateinfo lines always include a .x86_64 or .noarch
+      # or .x686 that we have traditionally trimmed out
+      fixed_rpm_trimmed = ereg_replace(string:fixed_rpm, pattern:"\.[^\.]+$", replace:'');
+      if ( !isnull(fixed_rpm_trimmed) ) {
+        fixed_rpm = fixed_rpm_trimmed;
+      }
+
+      fixed_parsed = parse_rpm_name(rpm:fixed_rpm);
+      package_name = fixed_parsed["name"];
+    
+      # Fixup if necessary
+      if ( package_name =~ "^kernel-" && isnull(fixup_flag)) {
+        rpms = fixup_rpm_list(rpms);
+        fixup_flag = 1;
+      }
+      # If we Ever start using this function again, change this to start using a combination of
+      # populate_rpm_list_array() and fetch_rpm_lines(). Right now we don't, so don't stress over this edge case.
+      rpm_list_lines = egrep(pattern:"^" + _regex_sanitize_package_name(package_name) + "-[0-9]", string:rpms);
+      #rpm_list_lines = egrep(pattern:"^" + _regex_sanitize_package_name(package_name), string:rpms);
+
+      rpm_list_matches = split(rpm_list_lines, sep:'\n', keep:0);
+      foreach rpm_line (rpm_list_matches)
+      {
+        rpm_line_parsed = parse_rpm_name(rpm:rpm_line);
+        if (rpm_line_parsed["name"] == package_name)
+        {
+          fix_to_installed_array[fixed_rpm] = rpm_line;
+        }
+      }
+    }
+  }
+  if (keys(fix_to_installed_array)) {
+    foreach fixed_rpm (sort(keys(fix_to_installed_array))) {
+      rpm_report_add(package:fix_to_installed_array[fixed_rpm], reference:fixed_rpm);
+    }
+  }
+  rpm_report = rpm_report_get();
+  # This should never happen. We are forcing it to happen as a safety precaution
+  # to avoid weird NULL output in the report text.
+  if (isnull(rpm_report)) rpm_report = 'Unable to determine installed/fixed package versions for\n' + rhsa + ', even though it is reported by Red Hat as being\nunpatched.\n\n';
+  return rpm_report + redhat_report_yum_caveat(rhsa:rhsa);
+}
