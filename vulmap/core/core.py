@@ -2,10 +2,13 @@
 # -*- coding: utf-8 -*-
 import os
 from gevent import joinall
+
 from module import globals
 from module.time import now
 from module.color import color
 from module.output import output
+from module.dismap import dismap
+from module.dismap import dismap_getwebapps
 from module.banner import vul_list
 from module.proxy import proxy_set
 from module.allcheck import url_check
@@ -14,7 +17,6 @@ from module.api.fofa import fofa
 from module.api.dns import dns_result, dns_request
 from module.api.shodan import shodan_api
 from core.scan import scan
-from core.exploit import exploit
 from identify.identify import Identify
 from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
 
@@ -22,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
 class Core(object):
     @staticmethod
     def control_options(args):  # 选项控制，用于处理所有选项
+        mode = "poc"
         delay = globals.get_value("DELAY")  # 获取全局变量延时时间DELAY
         now_warn = now.timed(de=delay) + color.red_warn()
         if args.socks:
@@ -31,10 +34,9 @@ class Core(object):
         if args.list is False:  # 判断是否显示漏洞列表
             print(now.timed(de=0) + color.yel_info() + color.yellow(" List of supported vulnerabilities"))
             print(vul_list())
+            exit(0)
         if args.thread_num != 10:  # 判断是否为默认线程
             print(now.timed(de=0) + color.yel_info() + color.yellow(" Custom thread number: " + str(args.thread_num)))
-        if args.vul is not None:  # 判断是否-v进行漏洞利用
-            args.mode = "exp"  # 若进行漏洞利用修改模式为exp
         if args.debug is False:  # 判断是否开启--debug功能
             print(now.timed(de=delay) + color.yel_info() + color.yellow(" Using debug mode to echo debug information"))
             globals.set_value("DEBUG", "debug")  # 设置全局变量DEBUG
@@ -51,7 +53,7 @@ class Core(object):
             if os.path.isfile(args.O_JSON):  # 判断json输出文件是否冲突
                 print(now.timed(de=delay) + color.red_warn() + color.red(" The json file: [" + args.O_JSON + "] already exists"))
                 exit(0)
-        if args.mode is None or args.mode == "poc":  # 判断是否进入poc模式
+        if mode == "poc":  # 判断是否进入poc模式
             if args.url is not None and args.file is None:  # 判断是否为仅-u扫描单个URL
                 args.url = url_check(args.url)  # 处理url格式
                 if survival_check(args.url) == "f":  # 检查目标存活状态
@@ -109,11 +111,6 @@ class Core(object):
                 print(now.timed(de=delay) + color.yel_info() + color.cyan(" Scan result text saved to: " + args.O_TEXT))
             if args.O_JSON:
                 print(now.timed(de=delay) + color.yel_info() + color.cyan(" Scan result json saved to: " + args.O_JSON))
-        elif args.mode == "exp":  # 漏洞利用模式参数较少
-            if args.vul is not None and args.url is not None:  # 判断是否进入漏洞利用模式
-                core.control_webapps("url", args.url, args.vul, "exp")
-            else:
-                print(now_warn + color.red(" Options error, -v must specify -u"))
         else:
             print(now_warn + color.red(" Options error ... ..."))
 
@@ -161,10 +158,22 @@ class Core(object):
                 with open(target, 'r') as _:  # 打开目标文件
                     for line in _:  # 用for循环读取文件
                         line = line.strip()  # 过滤杂质
-                        if line:  # 判断是否结束
-                            target_list.append(line)  # 读取到的目标加入字典准备扫描
+                        get_line = dismap(line)
+                        if get_line == "######":
+                            target_num = target_num - 1
+                            continue
+                        if globals.get_value("DISMAP") == "true":
+                            dismap_webapps = dismap_getwebapps(line)
+                        if get_line:  # 判断是否结束
+                            if globals.get_value("DISMAP") == "true":
+                                if dismap_webapps is None:
+                                    continue
+                                else:
+                                    print(now.timed(de=0) + color.yel_info() +
+                                        " The result of dismap identifiy is " + color.yellow(dismap_webapps))
+                            target_list.append(get_line)  # 读取到的目标加入字典准备扫描
                             now_num += 1  # 读取到之后当前数量+1
-                            furl = line
+                            furl = get_line
                             furl = url_check(furl)  # url格式检测
                             output("text", "[*] " + furl)  # 丢给output模块判断是否输出文件
                             if survival_check(furl) == "f":  # 如果存活检测失败就跳过
@@ -176,7 +185,10 @@ class Core(object):
                                 print(now.timed(de=0) + color.yel_info() + color.yellow(
                                     " Current:[" + str(now_num) + "] Total:[" + str(
                                         target_num) + "] Scanning target: " + furl))
-                            if webapps is None:  # 判断是否要进行指纹识别
+
+                            if globals.get_value("DISMAP") == "true" and webapps is None:
+                                webapps_identify.append(dismap_getwebapps(line))
+                            elif webapps is None:  # 判断是否要进行指纹识别
                                 webapps_identify.clear()  # 可能跟单个url冲突需要清理字典
                                 Identify.start(furl, webapps_identify)  # 识别指纹
                                 # print(webapps_identify)
@@ -198,6 +210,8 @@ class Core(object):
                             core.scan_webapps(webapps_identify, thread_poc, thread_pool, gevent_pool, furl)  # 开扫
                             joinall(gevent_pool)  # 运行协程池
                             wait(thread_poc, return_when=ALL_COMPLETED)  # 等待所有多线程任务运行完
+                            if globals.get_value("DISMAP") == "true" and webapps is None:
+                                webapps_identify.clear()
                     print(now.timed(de=0) + color.yel_info() + color.yellow(" Scan completed and ended                             "))
             elif target_type == "fofa" or target_type == "shodan":  # ======================================================= 第三种调用fofa api
                 total = len(target)  # fofa api的总数，不出意外100个
@@ -229,19 +243,19 @@ class Core(object):
                             " Current:[" + str(now_num) + "] Total:[" + str(
                                 total) + "] Scanning target: " + fofa_target))
                     if webapps is None:  # 需要指纹识别
-                        Identify.start(target, webapps_identify)  # 是否需要进行指纹识别
+                        webapps_identify.clear()
+                        Identify.start(fofa_target, webapps_identify)  # 是否需要进行指纹识别
                     core.scan_webapps(webapps_identify, thread_poc, thread_pool, gevent_pool, fofa_target)
                     joinall(gevent_pool)  # 运行协程池
                     wait(thread_poc, return_when=ALL_COMPLETED)  # 等待所有多线程任务运行完
                 print(now.timed(de=0) + color.yel_info() + color.yellow(" Scan completed and ended                             "))
-        elif mode == "exp":  # 漏洞利用
-            vul_num = webapps
-            exploit(target, vul_num)  # 调用core中的exploit
 
     @staticmethod
     def scan_webapps(webapps_identify, thread_poc, thread_pool, gevent_pool, target):
         # 自动处理大小写的webapps类型: https://github.com/zhzyker/vulmap/commit/5e1ee00b0598b5dd5b9898a01fabcc4b84dc4e8c
         webapps_identify = [x.lower() for x in webapps_identify]
+        if globals.get_value("DISMAP") == "true":
+            webapps_identify = ','.join(webapps_identify)
         if r"weblogic" in webapps_identify or r"all" in webapps_identify:
             thread_poc.append(thread_pool.submit(scan.oracle_weblogic(target, gevent_pool)))
         if r"shiro" in webapps_identify or r"all" in webapps_identify:
@@ -290,6 +304,15 @@ class Core(object):
             thread_poc.append(thread_pool.submit(scan.big_ip(target, gevent_pool)))
         if r"ofbiz" in webapps_identify or r"all" in webapps_identify:
             thread_poc.append(thread_pool.submit(scan.apache_ofbiz(target, gevent_pool)))
-
+        if r"qianxin" in webapps_identify or r"all" in webapps_identify:
+            thread_poc.append(thread_pool.submit(scan.qiaixin(target, gevent_pool)))
+        if r"ruijie" in webapps_identify or r"all" in webapps_identify:
+            thread_poc.append(thread_pool.submit(scan.ruijie(target, gevent_pool)))
+        if r"eyou" in webapps_identify or r"all" in webapps_identify:
+            thread_poc.append(thread_pool.submit(scan.eyou(target, gevent_pool)))
+        if r"coremail" in webapps_identify or r"all" in webapps_identify:
+            thread_poc.append(thread_pool.submit(scan.coremail(target, gevent_pool)))
+        if r"ecology" in webapps_identify or r"all" in webapps_identify:
+            thread_poc.append(thread_pool.submit(scan.ecology(target, gevent_pool)))
 
 core = Core()

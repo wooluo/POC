@@ -1,2 +1,0 @@
-./vscan -host www.baidu.com -ceyeapi dd20bdc941d130440760531276533cf3 -ceyedomain j4a3t9.ceye.io
-带外测试

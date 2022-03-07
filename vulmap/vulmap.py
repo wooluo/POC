@@ -28,12 +28,13 @@ def config():
     }
     globals.init()  # 初始化全局变量模块
     globals.set_value("UA", args.ua)  # 设置全局变量UA
-    globals.set_value("VUL", args.vul)  # 设置全局变量VULN用于判断是否漏洞利用模式
+    globals.set_value("VUL", None)  # 设置全局变量VULN用于判断是否漏洞利用模式
     globals.set_value("CHECK", args.check)  # 目标存活检测
     globals.set_value("DEBUG", args.debug)  # 设置全局变量DEBUG
     globals.set_value("DELAY", args.delay)  # 设置全局变量延时时间DELAY
     globals.set_value("DNSLOG", args.dnslog)  # 用于判断使用哪个dnslog平台
-    globals.set_value("VULMAP", str(0.7))  # 设置全局变量程序版本号
+    globals.set_value("DISMAP", "flase") # 是否接收dismap识别结果(false/true)
+    globals.set_value("VULMAP", str(0.9))  # 设置全局变量程序版本号
     globals.set_value("O_TEXT", args.O_TEXT)  # 设置全局变量OUTPUT判断是否输出TEXT
     globals.set_value("O_JSON", args.O_JSON)  # 设置全局变量OUTPUT判断是否输出JSON
     globals.set_value("HEADERS", header)  # 设置全局变量HEADERS
@@ -41,20 +42,20 @@ def config():
     globals.set_value("THREADNUM", args.thread_num)  # 设置全局变量THREADNUM传递线程数量
 
     # 替换自己的 ceye.io 的域名和 token
-    globals.set_value("ceye_domain","j4a3t9.ceye.io")
-    globals.set_value("ceye_token", "dd20bdc941d130440760531276533cf3")
+    globals.set_value("ceye_domain","xxxxxxxxxx")
+    globals.set_value("ceye_token", "xxxxxxxxxx")
 
     # 替换自己的 http://hyuga.co 的域名和 token
     # hyuga的域名和token可写可不写，如果不写则自动获得
-    globals.set_value("hyuga_domain", "gez5.hyuga.icu")
-    globals.set_value("hyuga_token", "23rnc1QUaOc2330AJ5hehzm3cn9cPfUKPcbW")
+    globals.set_value("hyuga_domain", "xxxxxxxxxx")
+    globals.set_value("hyuga_token", "xxxxxxxxxx")
 
     # fofa 邮箱和 key，需要手动修改为自己的
-    globals.set_value("fofa_email", "wooluo@126.com")
-    globals.set_value("fofa_key", "828bb9748982005cc414ae839b2fb6a0")
+    globals.set_value("fofa_email", "xxxxxxxxxx")
+    globals.set_value("fofa_key", "xxxxxxxxxx")
 
     # shodan key
-    globals.set_value("shodan_key", "DeMMCB6yUCFSRtJ3n03FPth9t52GVRfX")
+    globals.set_value("shodan_key", "xxxxxxxxxx")
 
 
 if __name__ == '__main__':
