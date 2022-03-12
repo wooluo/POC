@@ -1,0 +1,15 @@
+rm -rf BBScan
+rm -rf git
+rm -rf PeiQi-WIKI-POC
+rm -rf STS2G
+rm -rf Vulnerability
+rm -rf hack-requests
+rm -rf airbug
+rm -rf front-hub
+rm -rf xray
+rm -rf poc-hub
+rm -rf PoC-in-GitHub
+rm -rf vscan
+rm -rf vulmap
+rm -rf xray
+rm -rf nuclei-templates

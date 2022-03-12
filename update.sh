@@ -11,5 +11,4 @@ git clone https://github.com/ybdt/poc-hub.git
 git clone https://github.com/nomi-sec/PoC-in-GitHub.git
 git clone https://github.com/veo/vscan.git
 git clone https://github.com/zhzyker/vulmap.git
-git clone https://github.com/chaitin/xray.git
 git clone https://github.com/projectdiscovery/nuclei-templates.git
