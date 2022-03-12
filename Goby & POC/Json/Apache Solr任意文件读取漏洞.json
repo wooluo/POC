@@ -1,5 +1,5 @@
 {
-      "Name": "Apache Solr Arbitrary File Read",
+      "Name": "Apache Solr任意文件读取漏洞",
       "Level": "2",
       "Tags": ["fileread"],
       "GobyQuery": "app=\"Solr\"",
@@ -7,7 +7,7 @@
       "Product": "Apache Solr",
       "Homepage": "https://solr.apache.org/",
       "Author": "PeiQi",
-      "Impact": "<p>Read any file on the server</p>",
+      "Impact": "<p><span style=\"color: rgb(65, 140, 175);\">咩咩咩🐏</span></p>",
       "Recommandation": "<p>undefined</p>",
       "References": [
             "http://wiki.peiqi.tech"
